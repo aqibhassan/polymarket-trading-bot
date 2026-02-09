@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
+import os
 import signal
 from datetime import UTC
 from decimal import Decimal
@@ -382,8 +383,12 @@ class BotOrchestrator:
             )
 
         # --- Component setup ---
+        kline_ws_url = os.environ.get(
+            "BINANCE_WS_URL",
+            "wss://fstream.binance.com/ws/btcusdt@kline_1m",
+        )
         ws_feed = BinanceWSFeed(
-            ws_url="wss://stream.binance.com:9443/ws/btcusdt@kline_1m",
+            ws_url=kline_ws_url,
             symbol="BTCUSDT",
             interval="1m",
         )
