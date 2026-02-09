@@ -58,6 +58,29 @@ services:
       clickhouse:
         condition: service_healthy
 
+  mvhe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      TIMESCALEDB_URL: postgresql://mvhe:mvhe_dev@timescaledb:5432/mvhe
+      BINANCE_WS_URL: wss://fstream.binance.com/ws/btcusdt@kline_1m
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/mvhe_heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
   dashboard:
     build:
       context: ./dashboard
