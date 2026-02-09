@@ -6,6 +6,11 @@ services:
     command: ["--paper", "--strategy", "singularity"]
     restart: unless-stopped
     env_file: .env
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      REDIS_URL: redis://redis:6379/0
+      TIMESCALEDB_URL: postgresql://${POSTGRES_USER:-mvhe}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-mvhe}
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -159,7 +164,7 @@ services:
           memory: 64M
           cpus: "0.1"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/health"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:3000/api/health"]
       interval: 15s
       timeout: 5s
       retries: 3
