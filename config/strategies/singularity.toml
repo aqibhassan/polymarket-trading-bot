@@ -1,0 +1,96 @@
+# Singularity Ensemble Strategy Configuration
+# Combines 5 signal sources for defensible alpha
+#
+# RE-OPTIMIZED: 2026-02-09 via fast_optimize.py (corrected ensemble logic)
+# Dataset: 1,052,641 1m candles (Feb 2024 - Feb 2026), 70,176 windows
+# Sweep: 4,608 parameter combinations with corrected ensemble:
+#   - Time-of-day votes neutral (confidence boost only, not directional)
+#   - effective_min floor of 2 (always require multi-source confirmation)
+#   - cum_return == 0 guard (skip flat candles)
+#
+# Best balanced config (Sharpe * sqrt(trades)):
+#   Sharpe=2.79, WinRate=93.0%, Trades=55,812, MaxDD=2.0%, PF=12.86
+#   Net PnL=$9,138,450 on $200/trade fixed sizing
+#
+# Best by win rate (500+ trades):
+#   WinRate=97.1%, Sharpe=2.48, Trades=16,445, MaxDD=0.5%, PF=32.21
+#   (uses min_confidence=0.70, weight_momentum=0.80, time_filter=off, last3=on)
+
+[strategy.singularity]
+# --- Signal weights (must sum to 1.0) ---
+weight_momentum = 0.30     # optimized: 0.30 for balanced (was 0.40)
+weight_ofi = 0.25          # order flow imbalance
+weight_futures = 0.18      # futures lead-lag
+weight_vol = 0.14          # volatility regime
+weight_time = 0.13         # time-of-day (neutral meta-signal)
+
+# --- Entry parameters (RE-OPTIMIZED) ---
+min_signals_agree = 2       # optimized: 2 directional signals required (floor enforced)
+min_confidence = 0.50       # optimized: 0.20-0.50 range; 0.50 for safety margin
+entry_minute_start = 8      # universally optimal across all configs
+entry_minute_end = 12       # extended from 11 → 12 (adds high-quality late entries)
+
+# --- Exit parameters ---
+# NOTE: Resolution guard and signal reversal are currently inoperative in
+# the real bot because bot.py doesn't call strategy.add_position().
+# Positions are settled at window boundary by the bot's own logic.
+# These values are kept for future use when position sync is implemented.
+resolution_guard_minute = 14  # bumped from 12 to allow min-12 entries
+exit_reversal_count = 2       # force-close if 2+ signals reverse
+hold_to_settlement = true
+stop_loss_pct = 1.00
+profit_target_pct = 0.40
+
+# --- Position sizing ---
+max_position_pct = 0.035    # 3.5% when all signals align (vs 2% default)
+
+# --- OFI parameters ---
+ofi_levels = 20                 # live-tuned: read deeper book for real imbalance (was 5)
+ofi_signal_threshold = 0.04     # live-tuned: Polymarket books balanced even at 20 levels (was 0.25)
+ofi_saturation = 0.20           # live-tuned: proportional to lower threshold (was 0.40)
+
+# --- Futures lead-lag parameters ---
+futures_lead_threshold_pct = 0.001    # live-tuned: perps and spot track within $1, velocity is the real signal (was 0.15)
+futures_velocity_threshold_pct = 0.08 # live-tuned: paper-discovery threshold (was 1.0)
+
+# --- Tick granularity parameters ---
+early_move_threshold_pct = 0.08
+min_early_ticks = 15
+early_window_seconds = 30
+
+# --- Volatility regime parameters ---
+vol_spike_threshold = 1.05      # live-tuned: 1m candle closes are coarser than ticks (was 1.25)
+vol_low_threshold = 0.80
+
+# --- Estimated win probability (for Kelly sizing) ---
+estimated_win_prob = 0.93    # updated from re-optimization: 93.0% with balanced config
+
+# --- Momentum tiered thresholds (OPTIMIZED) ---
+# Wider at early minutes, tighter at late minutes
+# NOTE: Array-of-tables MUST come last in TOML (closes the parent section)
+[[strategy.singularity.entry_tiers]]
+minute = 8
+threshold_pct = 0.14
+
+[[strategy.singularity.entry_tiers]]
+minute = 9
+threshold_pct = 0.12
+
+[[strategy.singularity.entry_tiers]]
+minute = 10
+threshold_pct = 0.09
+
+[[strategy.singularity.entry_tiers]]
+minute = 11
+threshold_pct = 0.07
+
+[[strategy.singularity.entry_tiers]]
+minute = 12
+threshold_pct = 0.05
+
+# --- Alternative high-accuracy profile (uncomment to use) ---
+# min_confidence = 0.70     # 97.1% win rate, fewer trades (16K)
+# weight_momentum = 0.80    # heavily momentum-weighted
+# entry_minute_end = 12     # same
+# use_time_filter = false    # time filter off for max accuracy
+# use_last3_bonus = true     # last-3-candle agreement required

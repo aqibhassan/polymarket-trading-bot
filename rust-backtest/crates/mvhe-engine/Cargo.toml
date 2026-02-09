@@ -1,0 +1,19 @@
+[package]
+name = "mvhe-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mvhe-core = { path = "../mvhe-core" }
+mvhe-strategy = { path = "../mvhe-strategy" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rayon = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "engine_bench"
+harness = false

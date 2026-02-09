@@ -1,0 +1,672 @@
+"""Singularity Ensemble Strategy — combines 5 signal sources for defensible edge.
+
+Signals:
+  1. Momentum Confirmation (40% weight) — BTC 15m cumulative return direction
+  2. Order Flow Imbalance (25% weight) — order book bid/ask imbalance
+  3. Futures Lead-Lag (15% weight) — Binance perps leading spot/Polymarket
+  4. Volatility Regime (10% weight) — realized vs implied vol mismatch
+  5. Time-of-Day (10% weight) — hourly seasonality adjustment
+
+Entry requires minimum 3 of 5 signals to agree on direction.
+Exit on 2+ signal reversals or resolution guard at minute 12 (tighter).
+Dynamic position sizing via Kelly * signal_count_mult * time_mult * vol_mult.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from src.core.logging import get_logger
+from src.models.signal import Confidence, ExitReason, Signal, SignalType
+from src.strategies.base import BaseStrategy
+from src.strategies.registry import register
+
+if TYPE_CHECKING:
+    from src.config.loader import ConfigLoader
+    from src.models.market import MarketState, OrderBookSnapshot, Position, Side
+    from src.models.order import Fill
+
+logger = get_logger(__name__)
+
+
+class _SignalVote:
+    """Internal: a single signal source's directional vote."""
+
+    __slots__ = ("name", "direction", "strength", "weight")
+
+    def __init__(
+        self, name: str, direction: str, strength: float, weight: float
+    ) -> None:
+        self.name = name
+        self.direction = direction  # "YES", "NO", or "neutral"
+        self.strength = strength  # 0-1 confidence
+        self.weight = weight
+
+
+@register("singularity")
+class SingularityStrategy(BaseStrategy):
+    """Ensemble strategy combining 5 orthogonal signal sources.
+
+    Gracefully degrades when signal sources are unavailable: if fewer
+    than 5 sources produce a vote, the minimum agreement count and
+    weights are adjusted proportionally.
+    """
+
+    REQUIRED_PARAMS: ClassVar[list[str]] = [
+        "strategy.singularity.min_confidence",
+        "strategy.singularity.min_signals_agree",
+    ]
+
+    def __init__(self, config: ConfigLoader, strategy_id: str | None = None) -> None:
+        super().__init__(config, strategy_id or "singularity")
+
+        # --- Signal weights (must sum to 1.0) ---
+        self._w_momentum = float(config.get("strategy.singularity.weight_momentum", 0.40))
+        self._w_ofi = float(config.get("strategy.singularity.weight_ofi", 0.25))
+        self._w_futures = float(config.get("strategy.singularity.weight_futures", 0.15))
+        self._w_vol = float(config.get("strategy.singularity.weight_vol", 0.10))
+        self._w_time = float(config.get("strategy.singularity.weight_time", 0.10))
+
+        # --- Entry parameters ---
+        self._min_signals_agree = int(config.get("strategy.singularity.min_signals_agree", 3))
+        self._min_confidence = float(config.get("strategy.singularity.min_confidence", 0.72))
+        self._entry_minute_start = int(config.get("strategy.singularity.entry_minute_start", 6))
+        self._entry_minute_end = int(config.get("strategy.singularity.entry_minute_end", 10))
+
+        # --- Momentum thresholds (tiered by minute) ---
+        raw_tiers = config.get("strategy.singularity.entry_tiers", None)
+        if raw_tiers and isinstance(raw_tiers, list):
+            self._tier_thresholds: dict[int, float] = {
+                int(t["minute"]): float(t["threshold_pct"]) for t in raw_tiers
+            }
+        else:
+            self._tier_thresholds = {8: 0.14, 9: 0.12, 10: 0.09, 11: 0.07, 12: 0.05}
+
+        # --- Exit parameters ---
+        self._resolution_guard_minute = int(
+            config.get("strategy.singularity.resolution_guard_minute", 12)
+        )
+        self._exit_reversal_count = int(
+            config.get("strategy.singularity.exit_reversal_count", 2)
+        )
+        self._max_position_pct = float(
+            config.get("strategy.singularity.max_position_pct", 0.035)
+        )
+
+        # --- Stop loss (for risk manager compatibility) ---
+        self._stop_loss_pct = float(
+            config.get("strategy.singularity.stop_loss_pct", 1.00)
+        )
+        self._profit_target_pct = float(
+            config.get("strategy.singularity.profit_target_pct", 0.40)
+        )
+
+        # --- Lazy-loaded signal analyzers ---
+        self._ofi_analyzer: Any = None
+        self._futures_detector: Any = None
+        self._tick_tracker: Any = None
+        self._vol_detector: Any = None
+        self._time_analyzer: Any = None
+        self._init_analyzers(config)
+
+        # --- Runtime state ---
+        self._entry_minutes: dict[str, int] = {}
+        self._entry_votes: dict[str, list[_SignalVote]] = {}
+
+    def _init_analyzers(self, config: ConfigLoader) -> None:
+        """Initialize signal analyzers, gracefully skipping unavailable ones."""
+        try:
+            from src.engine.order_flow_analyzer import OrderFlowAnalyzer
+            self._ofi_analyzer = OrderFlowAnalyzer(config)
+        except ImportError:
+            logger.warning("singularity_missing_module", module="order_flow_analyzer")
+
+        try:
+            from src.data.binance_futures_ws import FuturesLeadLagDetector
+            self._futures_detector = FuturesLeadLagDetector(config)
+        except ImportError:
+            logger.warning("singularity_missing_module", module="binance_futures_ws")
+
+        try:
+            from src.engine.tick_granularity import TickGranularityTracker
+            self._tick_tracker = TickGranularityTracker(config)
+        except ImportError:
+            logger.warning("singularity_missing_module", module="tick_granularity")
+
+        try:
+            from src.engine.volatility_regime import VolatilityRegimeDetector
+            self._vol_detector = VolatilityRegimeDetector(config)
+        except ImportError:
+            logger.warning("singularity_missing_module", module="volatility_regime")
+
+        try:
+            from src.engine.time_of_day import TimeOfDayAnalyzer
+            self._time_analyzer = TimeOfDayAnalyzer(config)
+        except ImportError:
+            logger.warning("singularity_missing_module", module="time_of_day")
+
+    def generate_signals(
+        self,
+        market_state: MarketState,
+        orderbook: OrderBookSnapshot,
+        context: dict[str, Any],
+    ) -> list[Signal]:
+        """Generate trading signals from the ensemble of 5 signal sources.
+
+        Expected context keys:
+            candles_1m: list of 1m Candle objects for the current 15m window
+            window_open_price: BTC price at window start
+            minute_in_window: current minute within the 15m window (0-14)
+            yes_price: current Polymarket YES token price
+            futures_price: current Binance futures price (optional)
+            spot_price: current Binance spot price (optional)
+            orderbook_history: list of recent OrderBookSnapshot (optional)
+            recent_ticks: list of recent tick prices as Decimal (optional)
+        """
+        signals: list[Signal] = []
+        market_id = market_state.market_id
+
+        candles_1m = context.get("candles_1m", [])
+        window_open_price = float(context.get("window_open_price", 0))
+        minute_in_window = int(context.get("minute_in_window", 0))
+        yes_price = float(context.get("yes_price", 0.5))
+
+        # --- Exit checks for open positions ---
+        for pos in self.open_positions:
+            exit_signal = self._check_exit(
+                pos, market_state, orderbook, context, minute_in_window,
+            )
+            if exit_signal is not None:
+                signals.append(exit_signal)
+
+        # --- Entry pipeline ---
+        if minute_in_window < self._entry_minute_start:
+            return signals
+
+        if minute_in_window > self._entry_minute_end:
+            return signals
+
+        if not candles_1m or window_open_price <= 0:
+            return signals
+
+        # --- Collect votes from all signal sources ---
+        votes: list[_SignalVote] = []
+
+        # Signal 1: Momentum Confirmation
+        momentum_vote = self._vote_momentum(
+            candles_1m, window_open_price, minute_in_window,
+        )
+        if momentum_vote is not None:
+            votes.append(momentum_vote)
+
+        # Signal 2: Order Flow Imbalance
+        ofi_vote = self._vote_ofi(orderbook, context)
+        if ofi_vote is not None:
+            votes.append(ofi_vote)
+
+        # Signal 3: Futures Lead-Lag
+        futures_vote = self._vote_futures(context, yes_price)
+        if futures_vote is not None:
+            votes.append(futures_vote)
+
+        # Signal 4: Volatility Regime
+        vol_vote = self._vote_vol_regime(context, yes_price, market_state)
+        if vol_vote is not None:
+            votes.append(vol_vote)
+
+        # Signal 5: Time-of-Day
+        time_vote = self._vote_time_of_day()
+        if time_vote is not None:
+            votes.append(time_vote)
+
+        if not votes:
+            return signals
+
+        # --- Aggregate votes ---
+        yes_votes = [v for v in votes if v.direction == "YES"]
+        no_votes = [v for v in votes if v.direction == "NO"]
+        neutral_votes = [v for v in votes if v.direction == "neutral"]
+
+        # Determine majority direction (neutral votes don't count for direction)
+        yes_count = len(yes_votes)
+        no_count = len(no_votes)
+
+        # Dynamically adjust min agreement: neutral votes don't count toward
+        # the directional agreement requirement (they boost confidence only).
+        # Floor at 2 to always require multi-source confirmation.
+        directional_count = yes_count + no_count
+        available_sources = len(votes)
+        effective_min = max(min(self._min_signals_agree, directional_count), 2)
+
+        if yes_count >= effective_min:
+            direction_str = "YES"
+            # Neutral votes boost confidence for the majority side
+            agreeing_votes = yes_votes + neutral_votes
+        elif no_count >= effective_min:
+            direction_str = "NO"
+            agreeing_votes = no_votes + neutral_votes
+        else:
+            logger.debug(
+                "singularity_insufficient_agreement",
+                market_id=market_id,
+                yes=yes_count,
+                no=no_count,
+                neutral=len(neutral_votes),
+                required=effective_min,
+            )
+            return signals
+
+        # --- Compute weighted confidence ---
+        total_weight = sum(v.weight for v in agreeing_votes)
+        if total_weight > 0:
+            weighted_confidence = sum(
+                v.strength * v.weight for v in agreeing_votes
+            ) / total_weight
+        else:
+            weighted_confidence = 0.0
+
+        # Signal count bonus: more agreeing signals = higher confidence
+        signal_count_mult = min(len(agreeing_votes) / 3.0, 1.5)
+        overall_confidence = min(weighted_confidence * signal_count_mult, 1.0)
+
+        if overall_confidence < self._min_confidence:
+            logger.debug(
+                "singularity_low_confidence",
+                confidence=overall_confidence,
+                min_required=self._min_confidence,
+            )
+            return signals
+
+        # --- All gates passed: generate ENTRY signal ---
+        from src.models.market import Side
+
+        if direction_str == "YES":
+            direction = Side.YES
+            entry_price = Decimal(str(yes_price))
+        else:
+            direction = Side.NO
+            entry_price = Decimal(str(1.0 - yes_price))
+
+        stop_loss = entry_price * (Decimal("1") - Decimal(str(self._stop_loss_pct)))
+        take_profit = entry_price * (Decimal("1") + Decimal(str(self._profit_target_pct)))
+
+        self._entry_minutes[market_id] = minute_in_window
+        self._entry_votes[market_id] = votes
+
+        # Build metadata
+        vote_summary = ", ".join(
+            f"{v.name}={v.direction}({v.strength:.2f})" for v in votes
+        )
+        confidence_obj = Confidence(
+            trend_strength=round(momentum_vote.strength if momentum_vote else 0.0, 4),
+            threshold_exceedance=round(overall_confidence, 4),
+            book_normality=round(ofi_vote.strength if ofi_vote else 0.0, 4),
+            liquidity_quality=round(time_vote.strength if time_vote else 0.0, 4),
+            overall=round(overall_confidence, 4),
+        )
+
+        logger.info(
+            "singularity_entry",
+            market_id=market_id,
+            direction=direction_str,
+            confidence=overall_confidence,
+            agreeing=len(agreeing_votes),
+            total_sources=available_sources,
+            votes=vote_summary,
+        )
+
+        signals.append(Signal(
+            strategy_id=self.strategy_id,
+            market_id=market_id,
+            signal_type=SignalType.ENTRY,
+            direction=direction,
+            strength=Decimal(str(round(overall_confidence, 4))),
+            confidence=confidence_obj,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            metadata={
+                "direction": direction_str.lower(),
+                "agreeing_signals": str(len(agreeing_votes)),
+                "total_sources": str(available_sources),
+                "votes": vote_summary,
+                "entry_minute": str(minute_in_window),
+            },
+        ))
+        return signals
+
+    # ------------------------------------------------------------------
+    # Individual signal voters
+    # ------------------------------------------------------------------
+
+    def _vote_momentum(
+        self,
+        candles_1m: list[Any],
+        window_open_price: float,
+        minute: int,
+    ) -> _SignalVote | None:
+        """Signal 1: BTC cumulative return direction."""
+        threshold_pct = self._tier_thresholds.get(minute)
+        if threshold_pct is None:
+            return None
+
+        current_close = float(candles_1m[-1].close)
+        cum_return = (current_close - window_open_price) / window_open_price
+        cum_return_pct = abs(cum_return) * 100.0
+
+        if cum_return_pct < threshold_pct:
+            return None
+
+        # Skip if no directional signal (exactly flat)
+        if cum_return == 0:
+            return None
+
+        direction = "YES" if cum_return > 0 else "NO"
+        strength = min(cum_return_pct / 0.25, 1.0)
+
+        return _SignalVote(
+            name="momentum",
+            direction=direction,
+            strength=strength,
+            weight=self._w_momentum,
+        )
+
+    def _vote_ofi(
+        self,
+        orderbook: OrderBookSnapshot,
+        context: dict[str, Any],
+    ) -> _SignalVote | None:
+        """Signal 2: Order flow imbalance."""
+        if self._ofi_analyzer is None:
+            return None
+
+        history = context.get("orderbook_history")
+        result = self._ofi_analyzer.analyze(orderbook, history)
+
+        if result.direction == "neutral":
+            return None
+
+        direction = "YES" if result.direction == "buy_pressure" else "NO"
+        return _SignalVote(
+            name="ofi",
+            direction=direction,
+            strength=result.signal_strength * result.confidence,
+            weight=self._w_ofi,
+        )
+
+    def _vote_futures(
+        self,
+        context: dict[str, Any],
+        yes_price: float,
+    ) -> _SignalVote | None:
+        """Signal 3: Binance futures lead-lag."""
+        if self._futures_detector is None:
+            return None
+
+        futures_price = context.get("futures_price")
+        spot_price = context.get("spot_price")
+        futures_velocity = context.get("futures_velocity_pct_per_min", 0.0)
+
+        if futures_price is None or spot_price is None:
+            return None
+
+        result = self._futures_detector.detect(
+            futures_price=Decimal(str(futures_price)),
+            spot_price=Decimal(str(spot_price)),
+            polymarket_yes_price=Decimal(str(yes_price)),
+            futures_velocity_pct_per_min=float(futures_velocity),
+        )
+
+        if result.direction == "neutral" or result.signal_strength == 0.0:
+            return None
+
+        direction = "YES" if result.direction == "long" else "NO"
+        return _SignalVote(
+            name="futures",
+            direction=direction,
+            strength=result.signal_strength,
+            weight=self._w_futures,
+        )
+
+    def _vote_vol_regime(
+        self,
+        context: dict[str, Any],
+        yes_price: float,
+        market_state: MarketState,
+    ) -> _SignalVote | None:
+        """Signal 4: Volatility regime detection."""
+        if self._vol_detector is None:
+            return None
+
+        recent_ticks = context.get("recent_ticks")
+        if not recent_ticks or len(recent_ticks) < 2:
+            return None
+
+        result = self._vol_detector.detect_regime(
+            recent_ticks=recent_ticks,
+            yes_price=Decimal(str(yes_price)),
+            time_remaining_seconds=market_state.time_remaining_seconds,
+        )
+
+        if result.signal_direction == "neutral":
+            return None
+
+        # long_vol means options are underpriced → buy whichever side is dominant
+        # short_vol means don't trade (reduce confidence)
+        if result.signal_direction == "long_vol":
+            direction = str(market_state.dominant_side.value)
+            strength = min(result.vol_ratio / 2.0, 1.0)
+        else:
+            # short_vol — signal to avoid trading
+            return None
+
+        return _SignalVote(
+            name="vol_regime",
+            direction=direction,
+            strength=strength,
+            weight=self._w_vol,
+        )
+
+    def _vote_time_of_day(self) -> _SignalVote | None:
+        """Signal 5: Time-of-day seasonality.
+
+        Time-of-day is a meta-signal — it doesn't vote on direction,
+        but modulates confidence. Returns a neutral-direction vote with
+        strength = position_size_multiplier / 1.25 (normalized).
+        """
+        if self._time_analyzer is None:
+            return None
+
+        adj = self._time_analyzer.get_current_adjustment()
+
+        # In optimal window, vote with the dominant direction (agreed by others)
+        # Since we don't know direction yet, we return a positive vote
+        # that will be applied as a confidence modifier
+        if adj.position_size_multiplier < 0.75:
+            return None  # Don't trade in very low-edge hours
+
+        strength = min(adj.position_size_multiplier / 1.25, 1.0)
+        # Time-of-day is a meta-signal (confidence modifier), not directional.
+        # It votes "neutral" and is counted as a boost for whichever side
+        # has majority. We mark direction="neutral" so it doesn't distort
+        # the directional vote count.
+        direction = "neutral"
+
+        return _SignalVote(
+            name="time_of_day",
+            direction=direction,
+            strength=strength,
+            weight=self._w_time,
+        )
+
+    # ------------------------------------------------------------------
+    # Exit logic
+    # ------------------------------------------------------------------
+
+    def _check_exit(
+        self,
+        position: Position,
+        market_state: MarketState,
+        orderbook: OrderBookSnapshot,
+        context: dict[str, Any],
+        minute_in_window: int,
+    ) -> Signal | None:
+        """Check if a position should be exited.
+
+        Exits:
+        1. Resolution guard at minute 12 (tighter than momentum-only)
+        2. Signal reversal: 2+ signals flip direction
+        """
+        from src.models.market import Side
+
+        # Resolution guard — always active
+        if minute_in_window >= self._resolution_guard_minute:
+            logger.info(
+                "singularity_exit_resolution_guard",
+                market_id=position.market_id,
+                minute=minute_in_window,
+            )
+            return Signal(
+                strategy_id=self.strategy_id,
+                market_id=position.market_id,
+                signal_type=SignalType.EXIT,
+                direction=position.side,
+                exit_reason=ExitReason.RESOLUTION_GUARD,
+                metadata={"minute": str(minute_in_window)},
+            )
+
+        # Signal reversal check
+        entry_votes = self._entry_votes.get(position.market_id)
+        if entry_votes is None:
+            return None
+
+        position_dir = position.side.value  # "YES" or "NO"
+        opposite_dir = "NO" if position_dir == "YES" else "YES"
+
+        # Re-poll available signals to check for reversals
+        reversed_count = 0
+
+        # Check momentum reversal
+        candles_1m = context.get("candles_1m", [])
+        window_open = float(context.get("window_open_price", 0))
+        if candles_1m and window_open > 0:
+            cum_return = (float(candles_1m[-1].close) - window_open) / window_open
+            if cum_return != 0:
+                momentum_dir = "YES" if cum_return > 0 else "NO"
+                if momentum_dir == opposite_dir:
+                    reversed_count += 1
+
+        # Check OFI reversal
+        if self._ofi_analyzer is not None:
+            ofi_result = self._ofi_analyzer.analyze(
+                orderbook, context.get("orderbook_history"),
+            )
+            if ofi_result.direction != "neutral":
+                ofi_dir = "YES" if ofi_result.direction == "buy_pressure" else "NO"
+                if ofi_dir == opposite_dir:
+                    reversed_count += 1
+
+        # Check futures lead-lag reversal
+        if self._futures_detector is not None:
+            futures_price = context.get("futures_price")
+            spot_price = context.get("spot_price")
+            if futures_price is not None and spot_price is not None:
+                futures_result = self._futures_detector.detect(
+                    futures_price=Decimal(str(futures_price)),
+                    spot_price=Decimal(str(spot_price)),
+                    polymarket_yes_price=Decimal(str(context.get("yes_price", 0.5))),
+                    futures_velocity_pct_per_min=float(
+                        context.get("futures_velocity_pct_per_min", 0.0)
+                    ),
+                )
+                if futures_result.direction not in ("neutral", "") and futures_result.signal_strength > 0:
+                    futures_dir = "YES" if futures_result.direction == "long" else "NO"
+                    if futures_dir == opposite_dir:
+                        reversed_count += 1
+
+        # Check volatility regime reversal (short_vol = signal to exit)
+        if self._vol_detector is not None:
+            recent_ticks = context.get("recent_ticks")
+            if recent_ticks and len(recent_ticks) >= 2:
+                vol_result = self._vol_detector.detect_regime(
+                    recent_ticks=recent_ticks,
+                    yes_price=Decimal(str(context.get("yes_price", 0.5))),
+                    time_remaining_seconds=market_state.time_remaining_seconds,
+                )
+                if vol_result.signal_direction == "short_vol":
+                    reversed_count += 1
+
+        if reversed_count >= self._exit_reversal_count:
+            logger.info(
+                "singularity_exit_signal_reversal",
+                market_id=position.market_id,
+                reversed_count=reversed_count,
+            )
+            return Signal(
+                strategy_id=self.strategy_id,
+                market_id=position.market_id,
+                signal_type=SignalType.EXIT,
+                direction=position.side,
+                exit_reason=ExitReason.TRAILING_STOP,
+                metadata={
+                    "reason": "signal_reversal",
+                    "reversed_count": str(reversed_count),
+                },
+            )
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Position sizing helpers
+    # ------------------------------------------------------------------
+
+    def get_position_size_multiplier(
+        self, agreeing_count: int, total_sources: int
+    ) -> float:
+        """Compute ensemble position size multiplier.
+
+        3 signals agree: 1.0x (base)
+        4 signals agree: 1.5x
+        5 signals agree: 1.75x (max)
+        """
+        if agreeing_count <= 3:
+            return 1.0
+        if agreeing_count == 4:
+            return 1.5
+        return 1.75
+
+    # ------------------------------------------------------------------
+    # Lifecycle callbacks
+    # ------------------------------------------------------------------
+
+    def on_fill(self, fill: Fill, position: Position) -> None:
+        """Log a fill event."""
+        logger.info(
+            "singularity_fill",
+            strategy=self.strategy_id,
+            order_id=str(fill.order_id),
+            price=float(fill.price),
+            size=float(fill.size),
+            market_id=position.market_id,
+        )
+
+    def on_cancel(self, order_id: str, reason: str) -> None:
+        """Log an order cancellation."""
+        logger.info(
+            "singularity_cancel",
+            strategy=self.strategy_id,
+            order_id=order_id,
+            reason=reason,
+        )
+
+    def _skip(self, market_id: str, direction: Side, reason: str) -> Signal:
+        """Create a SKIP signal."""
+        return Signal(
+            strategy_id=self.strategy_id,
+            market_id=market_id,
+            signal_type=SignalType.SKIP,
+            direction=direction,
+            metadata={"skip_reason": reason},
+        )

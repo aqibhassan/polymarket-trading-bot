@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mvhe-metrics
+  namespace: mvhe
+  labels:
+    app: mvhe
+    component: trading-bot
+    version: "0.1.0"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+spec:
+  type: ClusterIP
+  selector:
+    app: mvhe
+    component: trading-bot
+  ports:
+    # Metrics endpoint for Prometheus/Grafana scraping.
+    # The bot does not serve HTTP traffic; this port is reserved
+    # for a future /metrics exporter (e.g. prometheus_client).
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP

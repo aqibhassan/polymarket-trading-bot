@@ -1,0 +1,8 @@
+[risk]
+max_position_pct = 0.02
+max_daily_drawdown_pct = 0.05
+
+[execution]
+mode = "paper"
+paper_initial_balance = 10000.0
+paper_slippage_bps = 5

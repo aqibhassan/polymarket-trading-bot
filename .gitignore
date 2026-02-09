@@ -1,0 +1,68 @@
+# Memory / AI
+.memory-bank/
+.aim/
+*.jsonl
+.mcp.json
+
+# Secrets
+.env
+.env.*
+.env.local
+*.pem
+*.key
+secrets/
+k8s/secret.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+.hypothesis/
+
+# Rust
+execution-rs/target/
+rust-backtest/target/
+
+# Node
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.next/
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+.agents/
+
+# Claude Code (user-specific skills)
+.claude/skills/
+*.swp
+*.swo
+*~
+
+# Data (generated)
+data/**/*.csv
+data/**/*.json
+
+# Logs
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

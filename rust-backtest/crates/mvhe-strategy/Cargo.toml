@@ -1,0 +1,8 @@
+[package]
+name = "mvhe-strategy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mvhe-core = { path = "../mvhe-core" }
+serde = { workspace = true }

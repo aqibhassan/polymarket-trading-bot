@@ -1,0 +1,8 @@
+[strategy.false_sentiment]
+entry_threshold_base = 0.59
+threshold_time_scaling = 0.15
+lookback_candles = 5
+min_confidence = 0.6
+max_hold_minutes = 7
+force_exit_minute = 11
+no_entry_after_minute = 8

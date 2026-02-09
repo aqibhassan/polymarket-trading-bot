@@ -1,0 +1,17 @@
+[package]
+name = "mvhe-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mvhe-backtest"
+path = "src/main.rs"
+
+[dependencies]
+mvhe-core = { path = "../mvhe-core" }
+mvhe-strategy = { path = "../mvhe-strategy" }
+mvhe-engine = { path = "../mvhe-engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+rayon = { workspace = true }

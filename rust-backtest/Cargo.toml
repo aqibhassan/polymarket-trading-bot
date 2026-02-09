@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "crates/mvhe-core",
+    "crates/mvhe-strategy",
+    "crates/mvhe-engine",
+    "crates/mvhe-cli",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rayon = "1.10"
+clap = { version = "4", features = ["derive"] }
+memmap2 = "0.9"
+fast-float = "0.2"
+memchr = "2"
+rand = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

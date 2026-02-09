@@ -1,0 +1,267 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Trading Signals", "url": "/d/mvhe-trading-signals", "type": "link" },
+    { "title": "Risk Metrics", "url": "/d/mvhe-risk-metrics", "type": "link" },
+    { "title": "Performance", "url": "/d/mvhe-performance", "type": "link" }
+  ],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Key Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": { "steps": [{ "color": "blue", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 5, "x": 0, "y": 1 },
+      "id": 1,
+      "title": "Balance",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT balance FROM account_state ORDER BY updated_at DESC LIMIT 1",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "textMode": "value",
+        "colorMode": "background"
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 5, "x": 5, "y": 1 },
+      "id": 2,
+      "title": "Daily P&L",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(sum((exit_price - entry_price) * quantity), 0) AS daily_pnl FROM positions WHERE exit_time IS NOT NULL AND exit_time >= now() - interval '24 hours'",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "textMode": "value",
+        "colorMode": "background"
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.4 }, { "color": "green", "value": 0.55 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 5, "x": 10, "y": 1 },
+      "id": 3,
+      "title": "Win Rate",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT CASE WHEN count(*) > 0 THEN count(*) FILTER (WHERE (exit_price - entry_price) * quantity > 0)::float / count(*)::float ELSE 0 END AS win_rate FROM positions WHERE exit_time IS NOT NULL AND exit_time >= now() - interval '24 hours'",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "textMode": "value",
+        "colorMode": "background"
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [{ "color": "blue", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 5, "x": 15, "y": 1 },
+      "id": 4,
+      "title": "Trade Count (24h)",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT count(*) AS trade_count FROM positions WHERE exit_time IS NOT NULL AND exit_time >= now() - interval '24 hours'",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "textMode": "value",
+        "colorMode": "background"
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "INACTIVE", "color": "green" }, "1": { "text": "ACTIVE", "color": "red" } } }
+          ],
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 1 },
+      "id": 5,
+      "title": "Kill Switch",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT CASE WHEN kill_active THEN 1 ELSE 0 END AS status FROM risk_state ORDER BY updated_at DESC LIMIT 1",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "textMode": "value",
+        "colorMode": "background"
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "id": 101,
+      "title": "Equity Curve",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "currencyUSD"
+        }
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 8 },
+      "id": 6,
+      "title": "Equity Curve",
+      "type": "timeseries",
+      "targets": [
+        {
+          "rawSql": "SELECT exit_time AS time, sum((exit_price - entry_price) * quantity) OVER (ORDER BY exit_time) AS cumulative_pnl FROM positions WHERE exit_time IS NOT NULL AND $__timeFilter(exit_time) ORDER BY exit_time",
+          "refId": "A",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 102,
+      "title": "Recent Activity",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "pnl" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 16, "x": 0, "y": 19 },
+      "id": 7,
+      "title": "Recent Trades",
+      "type": "table",
+      "targets": [
+        {
+          "rawSql": "SELECT exit_time AS time, market_id, side, entry_price, exit_price, quantity, (exit_price - entry_price) * quantity AS pnl, exit_reason, extract(epoch FROM (exit_time - entry_time)) / 60.0 AS duration_min FROM positions WHERE exit_time IS NOT NULL ORDER BY exit_time DESC LIMIT 25",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false }
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "event_type" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "steps": [{ "color": "red", "value": null }] } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 8, "x": 16, "y": 19 },
+      "id": 8,
+      "title": "Error Log",
+      "type": "table",
+      "targets": [
+        {
+          "rawSql": "SELECT timestamp AS time, event_type, action, market_id, COALESCE(metadata->>'reason', reason, '') AS reason FROM audit_log WHERE action IN ('rejected', 'error', 'kill_switch') ORDER BY timestamp DESC LIMIT 20",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false }
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["mvhe", "overview"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "title": "MVHE - Overview",
+  "uid": "mvhe-overview",
+  "version": 1
+}

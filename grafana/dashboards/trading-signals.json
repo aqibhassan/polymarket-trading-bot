@@ -1,0 +1,208 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Signal Count (5m buckets)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('5 minutes', timestamp) AS time, signal_type, count(*) AS count FROM signals WHERE $__timeFilter(timestamp) GROUP BY time, signal_type ORDER BY time",
+          "refId": "A",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "Entry vs Exit Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('5 minutes', timestamp) AS time, signal_type, count(*) AS count FROM signals WHERE signal_type IN ('ENTRY', 'EXIT') AND $__timeFilter(timestamp) GROUP BY time, signal_type ORDER BY time",
+          "refId": "A",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "title": "Confidence Distribution",
+      "type": "histogram",
+      "targets": [
+        {
+          "rawSql": "SELECT confidence_overall FROM signals WHERE signal_type = 'ENTRY' AND $__timeFilter(timestamp)",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "bucketSize": 0.05,
+        "combine": false
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "title": "Skip Reasons Breakdown",
+      "type": "piechart",
+      "targets": [
+        {
+          "rawSql": "SELECT metadata->>'skip_reason' AS reason, count(*) AS count FROM signals WHERE signal_type = 'SKIP' AND $__timeFilter(timestamp) GROUP BY reason ORDER BY count DESC",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 100 }] } }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+      "id": 5,
+      "title": "Total Entries Today",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT count(*) FROM signals WHERE signal_type = 'ENTRY' AND timestamp >= now() - interval '24 hours'",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }] } }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 },
+      "id": 6,
+      "title": "Total Exits Today",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT count(*) FROM signals WHERE signal_type = 'EXIT' AND timestamp >= now() - interval '24 hours'",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": { "thresholds": { "steps": [{ "color": "blue", "value": null }] } }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 },
+      "id": 7,
+      "title": "Avg Confidence (Entries)",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT avg(confidence_overall) FROM signals WHERE signal_type = 'ENTRY' AND timestamp >= now() - interval '24 hours'",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "custom": { "fillOpacity": 10 },
+          "unit": "currencyUSD"
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "id": 8,
+      "title": "Equity Curve",
+      "type": "timeseries",
+      "targets": [
+        {
+          "rawSql": "SELECT exit_time AS time, sum((exit_price - entry_price) * quantity) OVER (ORDER BY exit_time) AS cumulative_pnl FROM positions WHERE exit_time IS NOT NULL AND $__timeFilter(exit_time) ORDER BY exit_time",
+          "refId": "A",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.4 }, { "color": "green", "value": 0.55 }] }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 28 },
+      "id": 9,
+      "title": "Win/Loss Ratio",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT CASE WHEN count(*) > 0 THEN count(*) FILTER (WHERE (exit_price - entry_price) * quantity > 0)::float / count(*)::float ELSE 0 END AS win_rate FROM positions WHERE exit_time IS NOT NULL AND exit_time >= now() - interval '24 hours'",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "NO POSITION", "color": "semi-dark-blue" }, "1": { "text": "ACTIVE", "color": "semi-dark-green" } } }
+          ],
+          "thresholds": { "steps": [{ "color": "blue", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 28 },
+      "id": 10,
+      "title": "Active Position",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT CASE WHEN count(*) > 0 THEN 1 ELSE 0 END AS has_position FROM positions WHERE is_open = true",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["mvhe", "signals"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "MVHE - Trading Signals",
+  "uid": "mvhe-trading-signals",
+  "version": 2
+}

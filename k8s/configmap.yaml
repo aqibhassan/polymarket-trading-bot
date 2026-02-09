@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mvhe-config
+  namespace: mvhe
+  labels:
+    app: mvhe
+    component: trading-bot
+    version: "0.1.0"
+data:
+  # Environment
+  MVHE_ENV: "production"
+  MVHE_LOG_LEVEL: "INFO"
+
+  # Bot settings
+  MVHE_TICK_INTERVAL: "5"
+  MVHE_STRATEGY: "momentum_confirmation"
+
+  # Strategy: momentum_confirmation (from validated backtest)
+  MVHE_MC_ENTRY_MINUTE_START: "8"
+  MVHE_MC_ENTRY_MINUTE_END: "10"
+  MVHE_MC_HOLD_TO_SETTLEMENT: "true"
+  MVHE_MC_PROFIT_TARGET_PCT: "0.40"
+  MVHE_MC_STOP_LOSS_PCT: "1.00"
+  MVHE_MC_MAX_HOLD_MINUTES: "10"
+  MVHE_MC_RESOLUTION_GUARD_MINUTE: "14"
+  MVHE_MC_MIN_CONFIDENCE: "0.70"
+  MVHE_MC_ESTIMATED_WIN_PROB: "0.884"
+
+  # Risk management
+  MVHE_RISK_MAX_POSITION_PCT: "0.02"
+  MVHE_RISK_MAX_DAILY_DRAWDOWN_PCT: "0.05"
+  MVHE_RISK_MAX_ORDER_BOOK_PCT: "0.10"
+  MVHE_RISK_MIN_SPREAD_THRESHOLD: "0.02"
+  MVHE_RISK_MIN_PROFITABLE_MOVE: "0.03"
+  MVHE_RISK_KELLY_MULTIPLIER: "0.25"
+
+  # Fee model
+  MVHE_FEE_MODEL: "polymarket_dynamic"
+  MVHE_FEE_CONSTANT: "0.25"
+  MVHE_SLIPPAGE_BPS: "5"
+
+  # Orderbook
+  MVHE_ORDERBOOK_SNAPSHOT_WINDOW: "30"
+  MVHE_ORDERBOOK_SPOOFING_THRESHOLD: "0.5"
+  MVHE_ORDERBOOK_HEAVY_BOOK_MULTIPLIER: "3.0"
+
+  # Liquidity
+  MVHE_LIQUIDITY_MIN_HOURLY_VOLUME: "100"
+  MVHE_LIQUIDITY_MAX_SPREAD_CENTS: "0.05"
+
+  # Binance
+  MVHE_BINANCE_SYMBOL: "btcusdt"
+  MVHE_BINANCE_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@kline_1m"
+
+  # Polymarket (non-sensitive)
+  MVHE_POLYMARKET_CLOB_URL: "https://clob.polymarket.com"
+  MVHE_POLYMARKET_WS_URL: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+  MVHE_POLYMARKET_CHAIN_ID: "137"

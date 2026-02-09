@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mvhe
+  namespace: mvhe
+  labels:
+    app: mvhe
+    component: trading-bot
+    version: "0.1.0"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Single instance only — no concurrent trading
+  selector:
+    matchLabels:
+      app: mvhe
+      component: trading-bot
+  template:
+    metadata:
+      labels:
+        app: mvhe
+        component: trading-bot
+        version: "0.1.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: default
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: mvhe
+          image: mvhe:0.1.0
+          args: ["--paper", "--strategy", "momentum_confirmation"]
+          envFrom:
+            - configMapRef:
+                name: mvhe-config
+            - secretRef:
+                name: mvhe-secrets
+          env:
+            - name: POLYMARKET_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mvhe-secrets
+                  key: POLYMARKET_PRIVATE_KEY
+            - name: POLYMARKET_FUNDER_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: mvhe-secrets
+                  key: POLYMARKET_FUNDER_ADDRESS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mvhe-secrets
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          startupProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import os, sys
+                  # Check that the bot process started and config loaded
+                  pid_file = '/tmp/mvhe_ready'
+                  sys.exit(0 if os.path.exists(pid_file) else 1)
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12  # 10s + 12*5s = 70s max startup
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import os, sys, time
+                  # Check heartbeat file is recent (updated each tick)
+                  hb = '/tmp/mvhe_heartbeat'
+                  if not os.path.exists(hb):
+                      sys.exit(1)
+                  age = time.time() - os.path.getmtime(hb)
+                  # Bot tick is 5s; allow 120s stale max (covers slow ticks)
+                  sys.exit(0 if age < 120 else 1)
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import os, sys
+                  # Bot is ready when WebSocket connection is established
+                  ws_file = '/tmp/mvhe_ws_connected'
+                  sys.exit(0 if os.path.exists(ws_file) else 1)
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Bot writes logs and tmp files
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: audit-logs
+              mountPath: /app/logs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: audit-logs
+          persistentVolumeClaim:
+            claimName: mvhe-audit-logs
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
+      restartPolicy: Always

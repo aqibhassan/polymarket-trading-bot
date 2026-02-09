@@ -1,0 +1,210 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-reds" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.03 }, { "color": "red", "value": 0.05 }] }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Daily Drawdown (%)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('1 hour', timestamp) AS time, max(drawdown_pct) AS drawdown FROM risk_metrics WHERE $__timeFilter(timestamp) GROUP BY time ORDER BY time",
+          "refId": "A",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "Total Exposure Over Time",
+      "type": "timeseries",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('5 minutes', timestamp) AS time, sum(position_size) AS total_exposure FROM positions WHERE is_open = true AND $__timeFilter(timestamp) GROUP BY time ORDER BY time",
+          "refId": "A",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "INACTIVE", "color": "green" }, "1": { "text": "ACTIVE", "color": "red" } } }
+          ],
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "id": 3,
+      "title": "Kill Switch Status",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT CASE WHEN kill_active THEN 1 ELSE 0 END AS status FROM risk_state ORDER BY updated_at DESC LIMIT 1",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 5 }] } }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "id": 4,
+      "title": "Open Positions",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "SELECT count(*) FROM positions WHERE is_open = true",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 5,
+      "title": "Position Sizes Distribution",
+      "type": "barchart",
+      "targets": [
+        {
+          "rawSql": "SELECT market_id, quantity AS size FROM positions WHERE is_open = true ORDER BY quantity DESC LIMIT 20",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-blues" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.05 }] }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 6,
+      "title": "Max Drawdown (Rolling 24h)",
+      "type": "gauge",
+      "targets": [
+        {
+          "rawSql": "SELECT max(drawdown_pct) FROM risk_metrics WHERE timestamp >= now() - interval '24 hours'",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 0.1,
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.03 }, { "color": "red", "value": 0.05 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 20 },
+      "id": 7,
+      "title": "Daily Drawdown % (Current)",
+      "type": "gauge",
+      "targets": [
+        {
+          "rawSql": "SELECT drawdown_pct FROM risk_metrics WHERE timestamp >= now() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 20 },
+      "id": 8,
+      "title": "Position Size Distribution",
+      "type": "histogram",
+      "targets": [
+        {
+          "rawSql": "SELECT quantity AS position_size FROM positions WHERE exit_time IS NOT NULL AND $__timeFilter(exit_time)",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "bucketSize": 10,
+        "combine": false
+      }
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 5 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 20 },
+      "id": 9,
+      "title": "Max Consecutive Losses",
+      "type": "stat",
+      "targets": [
+        {
+          "rawSql": "WITH trade_results AS (SELECT exit_time, CASE WHEN (exit_price - entry_price) * quantity < 0 THEN 1 ELSE 0 END AS is_loss, CASE WHEN (exit_price - entry_price) * quantity < 0 THEN 0 ELSE 1 END AS is_win FROM positions WHERE exit_time IS NOT NULL AND exit_time >= now() - interval '24 hours' ORDER BY exit_time), streaks AS (SELECT is_loss, exit_time, sum(is_win) OVER (ORDER BY exit_time) AS grp FROM trade_results) SELECT COALESCE(max(streak), 0) AS max_consecutive_losses FROM (SELECT grp, count(*) AS streak FROM streaks WHERE is_loss = 1 GROUP BY grp) sub",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["mvhe", "risk"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "title": "MVHE - Risk Metrics",
+  "uid": "mvhe-risk-metrics",
+  "version": 2
+}

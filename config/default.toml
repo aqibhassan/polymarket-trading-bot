@@ -1,0 +1,126 @@
+[strategy.false_sentiment]
+entry_threshold_base = 0.59
+threshold_time_scaling = 0.15
+lookback_candles = 5
+min_confidence = 0.6
+max_hold_minutes = 7
+force_exit_minute = 11
+no_entry_after_minute = 8
+
+[strategy.momentum_confirmation]
+# Optimal tiered entry from 132K candle backtest (3 months real BTC data)
+# Validated on 2,471 real Polymarket trades: 89.4% accuracy, $20.49 net EV/trade
+# Break-even accuracy: 74.3% (15pp safety margin)
+entry_minute_start = 8
+entry_minute_end = 10
+hold_to_settlement = true
+profit_target_pct = 0.40
+stop_loss_pct = 1.00
+max_hold_minutes = 10
+resolution_guard_minute = 15
+min_confidence = 0.55
+# From real Polymarket validation (2,471 trades, Jan-Feb 2026)
+estimated_win_prob = 0.884
+
+[[strategy.momentum_confirmation.entry_tiers]]
+minute = 8
+threshold_pct = 0.10
+
+[[strategy.momentum_confirmation.entry_tiers]]
+minute = 9
+threshold_pct = 0.08
+
+[[strategy.momentum_confirmation.entry_tiers]]
+minute = 10
+threshold_pct = 0.05
+
+[strategy.singularity]
+# Re-optimized config (Feb 2026): 83.83% WR, 64K trades, Sharpe 2.42
+# Neutral time-of-day, effective_min floor of 2, cum_return==0 guard
+entry_minute_start = 8
+entry_minute_end = 12
+min_confidence = 0.50
+min_signals_agree = 2
+hold_to_settlement = true
+stop_loss_pct = 1.00
+profit_target_pct = 0.40
+resolution_guard_minute = 15
+estimated_win_prob = 0.838
+weight_momentum = 0.30
+weight_ofi = 0.25
+weight_futures = 0.15
+weight_vol = 0.10
+weight_time = 0.10
+
+[[strategy.singularity.entry_tiers]]
+minute = 8
+threshold_pct = 0.14
+
+[[strategy.singularity.entry_tiers]]
+minute = 9
+threshold_pct = 0.12
+
+[[strategy.singularity.entry_tiers]]
+minute = 10
+threshold_pct = 0.09
+
+[[strategy.singularity.entry_tiers]]
+minute = 11
+threshold_pct = 0.07
+
+[[strategy.singularity.entry_tiers]]
+minute = 12
+threshold_pct = 0.05
+
+[exit]
+profit_target_pct = 0.05
+trailing_stop_pct = 0.03
+hard_stop_loss_pct = 0.04
+max_hold_seconds = 420
+
+[risk]
+max_position_pct = 0.02
+max_daily_drawdown_pct = 0.05
+max_order_book_pct = 0.10
+min_spread_threshold = 0.02
+min_profitable_move = 0.03
+
+# Kelly position sizing for binary prediction markets
+# f* = (p - P) / (P * (1 - P)), then multiply by kelly_multiplier, cap at max_position_pct
+# Quarter-Kelly recommended: balances growth vs drawdown risk
+# Validated: 0% ruin probability, <10% max drawdown at 99th percentile
+kelly_multiplier = 0.25
+min_starting_balance = 10000
+
+[risk.fees]
+# Polymarket 15-min crypto dynamic taker fee curve
+# fee = position_size * 0.25 * price^2 * (1 - price)^2
+# Peaks at 1.56% at 50/50 odds, drops to ~0.2% at extremes
+# Maker fee = 0%, Settlement fee = 0%
+fee_model = "polymarket_dynamic"
+fee_constant = 0.25
+slippage_bps = 5
+
+[orderbook]
+snapshot_window_seconds = 30
+spoofing_detection_threshold = 0.5
+heavy_book_multiplier = 3.0
+
+[liquidity]
+min_hourly_volume = 100
+max_spread_cents = 0.05
+
+[bot]
+tick_interval_seconds = 5
+
+[paper]
+initial_balance = 10000
+
+[binance]
+symbol = "btcusdt"
+ws_url = "wss://stream.binance.com:9443/ws/btcusdt@kline_1m"
+
+[polymarket]
+clob_url = "https://clob.polymarket.com"
+ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+chain_id = 137
