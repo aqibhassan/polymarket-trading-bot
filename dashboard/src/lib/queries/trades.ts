@@ -159,7 +159,7 @@ export async function getAdvancedMetrics(strategy: string): Promise<AdvancedMetr
   }
 
   return {
-    profit_factor: Number(profitFactor.toFixed(2)),
+    profit_factor: Number.isFinite(profitFactor) ? Number(profitFactor.toFixed(2)) : 9999,
     sharpe_ratio: Number(sharpe.toFixed(2)),
     sortino_ratio: Number(sortino.toFixed(2)),
     max_drawdown_pct: Number((maxDrawdown * 100).toFixed(2)),

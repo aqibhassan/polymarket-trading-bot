@@ -8,46 +8,61 @@ interface MetricsGridProps {
   metrics: AdvancedMetrics | null;
 }
 
+/** Safe toFixed that handles null/undefined/NaN. */
+function safe(val: number | null | undefined, digits: number = 2): string {
+  if (val == null || Number.isNaN(val)) return '0';
+  if (!Number.isFinite(val)) return '\u221E';
+  return val.toFixed(digits);
+}
+
 export function MetricsGrid({ metrics }: MetricsGridProps) {
   if (!metrics) {
     return null;
   }
 
+  const pf = metrics.profit_factor ?? 0;
+  const sharpe = metrics.sharpe_ratio ?? 0;
+  const sortino = metrics.sortino_ratio ?? 0;
+  const maxDd = metrics.max_drawdown_pct ?? 0;
+  const holdTime = metrics.avg_hold_time_minutes ?? 0;
+  const exp = metrics.expectancy ?? 0;
+  const tpd = metrics.avg_trades_per_day ?? 0;
+
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <StatCard
         title="Profit Factor"
-        value={metrics.profit_factor === Infinity ? '\u221E' : metrics.profit_factor.toFixed(2)}
-        trend={metrics.profit_factor >= 1.5 ? 'up' : metrics.profit_factor >= 1 ? 'neutral' : 'down'}
+        value={pf >= 9999 ? '\u221E' : safe(pf)}
+        trend={pf >= 1.5 ? 'up' : pf >= 1 ? 'neutral' : 'down'}
         icon={<TrendingUp className="h-4 w-4" />}
       />
       <StatCard
         title="Sharpe Ratio"
-        value={metrics.sharpe_ratio.toFixed(2)}
-        trend={metrics.sharpe_ratio >= 1 ? 'up' : metrics.sharpe_ratio >= 0 ? 'neutral' : 'down'}
+        value={safe(sharpe)}
+        trend={sharpe >= 1 ? 'up' : sharpe >= 0 ? 'neutral' : 'down'}
         icon={<Activity className="h-4 w-4" />}
       />
       <StatCard
         title="Sortino Ratio"
-        value={metrics.sortino_ratio.toFixed(2)}
-        trend={metrics.sortino_ratio >= 1 ? 'up' : metrics.sortino_ratio >= 0 ? 'neutral' : 'down'}
+        value={safe(sortino)}
+        trend={sortino >= 1 ? 'up' : sortino >= 0 ? 'neutral' : 'down'}
         icon={<Zap className="h-4 w-4" />}
       />
       <StatCard
         title="Max Drawdown"
-        value={`${metrics.max_drawdown_pct.toFixed(2)}%`}
-        trend={metrics.max_drawdown_pct <= 5 ? 'up' : metrics.max_drawdown_pct <= 15 ? 'neutral' : 'down'}
+        value={`${safe(maxDd)}%`}
+        trend={maxDd <= 5 ? 'up' : maxDd <= 15 ? 'neutral' : 'down'}
         icon={<TrendingDown className="h-4 w-4" />}
       />
       <StatCard
         title="Avg Hold Time"
-        value={`${metrics.avg_hold_time_minutes.toFixed(1)}m`}
+        value={`${safe(holdTime, 1)}m`}
         icon={<Clock className="h-4 w-4" />}
       />
       <StatCard
         title="Expectancy"
-        value={`$${metrics.expectancy.toFixed(4)}`}
-        trend={metrics.expectancy > 0 ? 'up' : metrics.expectancy === 0 ? 'neutral' : 'down'}
+        value={`$${safe(exp, 4)}`}
+        trend={exp > 0 ? 'up' : exp === 0 ? 'neutral' : 'down'}
         icon={<Target className="h-4 w-4" />}
       />
       <StatCard
@@ -57,7 +72,7 @@ export function MetricsGrid({ metrics }: MetricsGridProps) {
       />
       <StatCard
         title="Avg Trades/Day"
-        value={metrics.avg_trades_per_day.toFixed(1)}
+        value={safe(tpd, 1)}
         icon={<BarChart3 className="h-4 w-4" />}
       />
     </div>
