@@ -10,6 +10,9 @@ const INITIAL_STATE: BotState = {
   window: null,
   daily: null,
   ws_status: null,
+  last_trade: null,
+  signals: null,
+  sizing: null,
 };
 
 export function useBotState() {

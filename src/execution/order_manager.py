@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from src.core.logging import get_logger, log_order_event
@@ -69,14 +69,14 @@ class OrderManager:
             order = order.model_copy(update={
                 "status": OrderStatus.SUBMITTED,
                 "exchange_order_id": exchange_id,
-                "updated_at": datetime.now(tz=timezone.utc),
+                "updated_at": datetime.now(tz=UTC),
             })
             self._orders[oid] = order
             log_order_event("submitted", oid, exchange_order_id=exchange_id)
         except Exception as exc:
             order = order.model_copy(update={
                 "status": OrderStatus.REJECTED,
-                "updated_at": datetime.now(tz=timezone.utc),
+                "updated_at": datetime.now(tz=UTC),
             })
             self._orders[oid] = order
             log_order_event("rejected", oid, reason=str(exc))
@@ -97,7 +97,7 @@ class OrderManager:
             if success:
                 order = order.model_copy(update={
                     "status": OrderStatus.CANCELLED,
-                    "updated_at": datetime.now(tz=timezone.utc),
+                    "updated_at": datetime.now(tz=UTC),
                 })
                 self._orders[order_id] = order
                 log_order_event("cancelled", order_id)
@@ -131,7 +131,7 @@ class OrderManager:
             "filled_size": new_filled,
             "avg_fill_price": avg_price,
             "status": new_status,
-            "updated_at": datetime.now(tz=timezone.utc),
+            "updated_at": datetime.now(tz=UTC),
         })
         self._orders[order_id] = order
         log_order_event(

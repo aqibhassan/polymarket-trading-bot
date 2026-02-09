@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4
@@ -54,8 +54,8 @@ class Order(BaseModel):
     status: OrderStatus = OrderStatus.PENDING
     filled_size: Decimal = Decimal("0")
     avg_fill_price: Decimal | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     exchange_order_id: str | None = None
     strategy_id: str = ""
     metadata: dict[str, str] = Field(default_factory=dict)
@@ -83,7 +83,7 @@ class Fill(BaseModel):
     price: Decimal
     size: Decimal
     fee: Decimal = Decimal("0")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     trade_id: str = ""
 
     @property

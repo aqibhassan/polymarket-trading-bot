@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -190,7 +190,7 @@ class KillSwitch:
         self._state = {
             "active": True,
             "reason": reason,
-            "triggered_at": datetime.now(tz=timezone.utc).isoformat(),
+            "triggered_at": datetime.now(tz=UTC).isoformat(),
         }
         self._save_state()
         log.critical(
@@ -204,7 +204,7 @@ class KillSwitch:
         self._state = {
             "active": True,
             "reason": reason,
-            "triggered_at": datetime.now(tz=timezone.utc).isoformat(),
+            "triggered_at": datetime.now(tz=UTC).isoformat(),
         }
         await self._async_save_state()
         log.critical(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,7 +37,7 @@ class AuditLogger:
 
     async def log_order(self, order: Order, action: str) -> None:
         entry = {
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
             "event_type": "order",
             "action": action,
             "order_id": str(order.id),
@@ -54,7 +54,7 @@ class AuditLogger:
 
     async def log_fill(self, fill: Fill, order: Order) -> None:
         entry = {
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
             "event_type": "fill",
             "action": "fill",
             "order_id": str(order.id),
@@ -68,7 +68,7 @@ class AuditLogger:
 
     async def log_rejection(self, signal: Signal, reason: str) -> None:
         entry = {
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
             "event_type": "rejection",
             "action": "rejected",
             "strategy_id": signal.strategy_id,
@@ -93,7 +93,7 @@ class AuditLogger:
                         "market_id": entry.get("market_id", ""),
                         "strategy": entry.get("strategy_id", ""),
                         "details": json.dumps(entry),
-                        "timestamp": datetime.now(tz=timezone.utc),
+                        "timestamp": datetime.now(tz=UTC),
                     },
                 )
             except Exception as exc:

@@ -7,7 +7,7 @@ import contextlib
 import json
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -191,7 +191,7 @@ class BinanceFuturesWSFeed:
             "quantity": quantity,
             "timestamp": datetime.fromtimestamp(
                 trade_time_ms / 1000,
-                tz=timezone.utc,
+                tz=UTC,
             ),
             "is_buyer_maker": is_buyer_maker,
             "agg_trade_id": data["a"],

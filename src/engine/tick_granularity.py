@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -162,9 +161,7 @@ class TickGranularityTracker:
             if diff == 0.0:
                 continue
             total_moves += 1
-            if direction == "green" and diff > 0:
-                aligned_count += 1
-            elif direction == "red" and diff < 0:
+            if direction == "green" and diff > 0 or direction == "red" and diff < 0:
                 aligned_count += 1
 
         if total_moves == 0:

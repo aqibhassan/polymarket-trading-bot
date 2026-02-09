@@ -16,4 +16,4 @@ RUN useradd --create-home --shell /bin/bash mvhe
 USER mvhe
 
 ENTRYPOINT ["python", "-m", "src.cli"]
-CMD ["--paper", "--strategy", "false_sentiment"]
+CMD ["--paper", "--strategy", "singularity"]

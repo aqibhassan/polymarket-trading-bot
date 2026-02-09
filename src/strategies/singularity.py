@@ -14,7 +14,6 @@ Dynamic position sizing via Kelly * signal_count_mult * time_mult * vol_mult.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -74,6 +73,14 @@ class SingularityStrategy(BaseStrategy):
         self._min_confidence = float(config.get("strategy.singularity.min_confidence", 0.72))
         self._entry_minute_start = int(config.get("strategy.singularity.entry_minute_start", 6))
         self._entry_minute_end = int(config.get("strategy.singularity.entry_minute_end", 10))
+
+        # --- Contrarian filter ---
+        self._skip_contrarian = bool(
+            config.get("strategy.singularity.skip_contrarian", True)
+        )
+        self._contrarian_threshold_pct = float(
+            config.get("strategy.singularity.contrarian_threshold_pct", 0.0)
+        )
 
         # --- Momentum thresholds (tiered by minute) ---
         raw_tiers = config.get("strategy.singularity.entry_tiers", None)
@@ -257,6 +264,26 @@ class SingularityStrategy(BaseStrategy):
                 required=effective_min,
             )
             return signals
+
+        # --- Contrarian filter: skip bets against BTC trend ---
+        if self._skip_contrarian and candles_1m and window_open_price > 0:
+            current_close = float(candles_1m[-1].close)
+            cum_return = (current_close - window_open_price) / window_open_price
+            cum_return_pct = cum_return * 100.0  # signed
+
+            is_contrarian = (
+                (direction_str == "YES" and cum_return_pct < -self._contrarian_threshold_pct)
+                or (direction_str == "NO" and cum_return_pct > self._contrarian_threshold_pct)
+            )
+            if is_contrarian:
+                logger.info(
+                    "singularity_skip_contrarian",
+                    market_id=market_id,
+                    direction=direction_str,
+                    cum_return_pct=round(cum_return_pct, 4),
+                    threshold=self._contrarian_threshold_pct,
+                )
+                return signals
 
         # --- Compute weighted confidence ---
         total_weight = sum(v.weight for v in agreeing_votes)
@@ -519,7 +546,6 @@ class SingularityStrategy(BaseStrategy):
         1. Resolution guard at minute 12 (tighter than momentum-only)
         2. Signal reversal: 2+ signals flip direction
         """
-        from src.models.market import Side
 
         # Resolution guard — always active
         if minute_in_window >= self._resolution_guard_minute:

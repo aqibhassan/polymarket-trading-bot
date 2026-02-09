@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -83,7 +83,7 @@ def make_candle():
             low=Decimal(str(low or min(open_, close))),
             close=Decimal(str(close)),
             volume=Decimal("100"),
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=UTC),
             interval="1m",
         )
 
@@ -94,7 +94,7 @@ def make_candle():
 def bullish_orderbook() -> OrderBookSnapshot:
     """Order book with heavy bid side (buy pressure)."""
     return OrderBookSnapshot(
-        timestamp=datetime.now(tz=timezone.utc),
+        timestamp=datetime.now(tz=UTC),
         market_id="test",
         bids=[
             OrderBookLevel(price=Decimal("0.60"), size=Decimal("500")),
@@ -117,7 +117,7 @@ def bullish_orderbook() -> OrderBookSnapshot:
 def neutral_orderbook() -> OrderBookSnapshot:
     """Balanced order book."""
     return OrderBookSnapshot(
-        timestamp=datetime.now(tz=timezone.utc),
+        timestamp=datetime.now(tz=UTC),
         market_id="test",
         bids=[
             OrderBookLevel(price=Decimal("0.50"), size=Decimal("100")),
@@ -144,8 +144,7 @@ class TestSingularityStrategy:
     def test_registered(self, mock_config: MagicMock) -> None:
         """Strategy is registered with 'singularity' name."""
         from src.strategies.registry import get
-
-        from src.strategies.singularity import SingularityStrategy  # noqa: F401
+        from src.strategies.singularity import SingularityStrategy
 
         cls = get("singularity")
         assert cls is SingularityStrategy
@@ -232,7 +231,7 @@ class TestSingularityStrategy:
 
         # Bearish orderbook (heavy asks)
         bearish_ob = OrderBookSnapshot(
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=UTC),
             market_id="test",
             bids=[
                 OrderBookLevel(price=Decimal("0.39"), size=Decimal("50")),
@@ -299,9 +298,9 @@ class TestSingularityStrategy:
         neutral_orderbook: OrderBookSnapshot,
     ) -> None:
         """Exit signal at resolution guard minute."""
-        from src.strategies.singularity import SingularityStrategy
         from src.models.market import Position
         from src.models.signal import ExitReason
+        from src.strategies.singularity import SingularityStrategy
 
         strat = SingularityStrategy(config=mock_config)
 
@@ -312,7 +311,7 @@ class TestSingularityStrategy:
             token_id="yes_token",
             entry_price=Decimal("0.60"),
             quantity=Decimal("100"),
-            entry_time=datetime.now(tz=timezone.utc),
+            entry_time=datetime.now(tz=UTC),
             stop_loss=Decimal("0.00"),
             take_profit=Decimal("1.00"),
         )

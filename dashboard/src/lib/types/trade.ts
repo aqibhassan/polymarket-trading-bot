@@ -37,6 +37,26 @@ export interface StrategyPerformance {
   avg_confidence: number;
 }
 
+export interface AdvancedMetrics {
+  profit_factor: number;
+  sharpe_ratio: number;
+  sortino_ratio: number;
+  max_drawdown_pct: number;
+  avg_hold_time_minutes: number;
+  expectancy: number;
+  total_trades: number;
+  avg_trades_per_day: number;
+}
+
+export interface SignalComboWinRate {
+  combo: string;
+  total: number;
+  wins: number;
+  win_rate: number;
+  avg_pnl: number;
+  total_pnl: number;
+}
+
 export interface AuditEvent {
   event_id: string;
   order_id: string;

@@ -195,7 +195,7 @@ class TestBinaryCostCalculation:
             entry_price=Decimal("0.50"),
             position_size=Decimal("100"),
         )
-        # num_shares = 100/0.50 = 200
-        # profit from min move = 200 * min_profitable_move should = total_cost
-        profit = result.min_profitable_move * (Decimal("100") / Decimal("0.50"))
+        # position_size is shares (100), not USDC
+        # profit from min move = num_shares * min_profitable_move should = total_cost
+        profit = result.min_profitable_move * Decimal("100")
         assert abs(profit - result.total_cost) < Decimal("0.0001")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -27,7 +27,7 @@ class TestCandleAggregatorBasic:
         result = aggregator.add_tick(
             price=Decimal("50000"),
             volume=Decimal("1"),
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
         )
         assert result is None
 
@@ -35,7 +35,7 @@ class TestCandleAggregatorBasic:
         aggregator.add_tick(
             price=Decimal("50000"),
             volume=Decimal("1"),
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
         )
         candle = aggregator.current_candle
         assert candle is not None
@@ -51,7 +51,7 @@ class TestCandleAggregatorBasic:
 
 class TestCandleAggregatorOHLCV:
     def test_updates_high(self, aggregator: CandleAggregator) -> None:
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         aggregator.add_tick(Decimal("50000"), Decimal("1"), ts)
         aggregator.add_tick(Decimal("50500"), Decimal("1"), ts)
         candle = aggregator.current_candle
@@ -59,7 +59,7 @@ class TestCandleAggregatorOHLCV:
         assert candle.high == Decimal("50500")
 
     def test_updates_low(self, aggregator: CandleAggregator) -> None:
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         aggregator.add_tick(Decimal("50000"), Decimal("1"), ts)
         aggregator.add_tick(Decimal("49500"), Decimal("1"), ts)
         candle = aggregator.current_candle
@@ -67,7 +67,7 @@ class TestCandleAggregatorOHLCV:
         assert candle.low == Decimal("49500")
 
     def test_accumulates_volume(self, aggregator: CandleAggregator) -> None:
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         aggregator.add_tick(Decimal("50000"), Decimal("10"), ts)
         aggregator.add_tick(Decimal("50100"), Decimal("20"), ts)
         aggregator.add_tick(Decimal("50200"), Decimal("30"), ts)
@@ -76,7 +76,7 @@ class TestCandleAggregatorOHLCV:
         assert candle.volume == Decimal("60")
 
     def test_close_is_last_price(self, aggregator: CandleAggregator) -> None:
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
         aggregator.add_tick(Decimal("50000"), Decimal("1"), ts)
         aggregator.add_tick(Decimal("50300"), Decimal("1"), ts)
         candle = aggregator.current_candle
@@ -86,9 +86,9 @@ class TestCandleAggregatorOHLCV:
 
 class TestCandleAggregatorFinalization:
     def test_interval_rollover_finalizes_candle(self, aggregator: CandleAggregator) -> None:
-        t1 = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        t2 = datetime(2024, 1, 1, 12, 0, 30, tzinfo=timezone.utc)
-        t3 = datetime(2024, 1, 1, 12, 1, 0, tzinfo=timezone.utc)  # New minute
+        t1 = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        t2 = datetime(2024, 1, 1, 12, 0, 30, tzinfo=UTC)
+        t3 = datetime(2024, 1, 1, 12, 1, 0, tzinfo=UTC)  # New minute
 
         aggregator.add_tick(Decimal("50000"), Decimal("10"), t1)
         aggregator.add_tick(Decimal("50500"), Decimal("5"), t2)
@@ -105,8 +105,8 @@ class TestCandleAggregatorFinalization:
         assert finalized.interval == "1m"
 
     def test_new_candle_starts_after_finalization(self, aggregator: CandleAggregator) -> None:
-        t1 = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        t2 = datetime(2024, 1, 1, 12, 1, 0, tzinfo=timezone.utc)
+        t1 = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        t2 = datetime(2024, 1, 1, 12, 1, 0, tzinfo=UTC)
 
         aggregator.add_tick(Decimal("50000"), Decimal("10"), t1)
         aggregator.add_tick(Decimal("50100"), Decimal("8"), t2)
@@ -119,7 +119,7 @@ class TestCandleAggregatorFinalization:
     def test_multiple_rollovers(self, aggregator: CandleAggregator) -> None:
         finalized: list[Candle] = []
         for minute in range(5):
-            ts = datetime(2024, 1, 1, 12, minute, 0, tzinfo=timezone.utc)
+            ts = datetime(2024, 1, 1, 12, minute, 0, tzinfo=UTC)
             result = aggregator.add_tick(Decimal(str(50000 + minute * 100)), Decimal("1"), ts)
             if result is not None:
                 finalized.append(result)
@@ -139,7 +139,7 @@ class TestCandleAggregatorThreadSafety:
 
         def add_ticks(start_price: int) -> None:
             try:
-                ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+                ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
                 for i in range(100):
                     agg.add_tick(
                         Decimal(str(start_price + i)),

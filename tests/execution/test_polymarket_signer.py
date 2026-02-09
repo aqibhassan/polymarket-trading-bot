@@ -14,7 +14,6 @@ from src.execution.polymarket_signer import (
 )
 from src.models.order import OrderSide, OrderStatus, OrderType
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -30,6 +30,13 @@ min_confidence = 0.50       # optimized: 0.20-0.50 range; 0.50 for safety margin
 entry_minute_start = 8      # universally optimal across all configs
 entry_minute_end = 12       # extended from 11 → 12 (adds high-quality late entries)
 
+# --- Contrarian filter ---
+# Skip bets that go against BTC cumulative return direction.
+# Data shows aligned bets (YES when BTC up, NO when BTC down) have ~100% WR
+# while contrarian bets (opposite) have ~40% WR.
+skip_contrarian = true          # enable contrarian bet filtering
+contrarian_threshold_pct = 0.0  # min cum_return % to consider directional (0 = any)
+
 # --- Exit parameters ---
 # NOTE: Resolution guard and signal reversal are currently inoperative in
 # the real bot because bot.py doesn't call strategy.add_position().

@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS mvhe.trades (
     exit_reason String,
     window_minute UInt8,
     cum_return_pct Float64,
-    confidence Float64
+    confidence Float64,
+    signal_details String DEFAULT ''
 ) ENGINE = MergeTree()
 ORDER BY (strategy, entry_time)
 PARTITION BY toYYYYMM(entry_time)
@@ -138,6 +139,14 @@ class ClickHouseStore:
         await asyncio.to_thread(self._client.command, CREATE_TRADES_TABLE)
         await asyncio.to_thread(self._client.command, CREATE_AUDIT_EVENTS_TABLE)
         await asyncio.to_thread(self._client.command, CREATE_DAILY_SUMMARY_TABLE)
+        # Migration: add signal_details column if missing (idempotent)
+        try:
+            await asyncio.to_thread(
+                self._client.command,
+                "ALTER TABLE mvhe.trades ADD COLUMN IF NOT EXISTS signal_details String DEFAULT ''",
+            )
+        except Exception:
+            log.debug("signal_details_column_migration_skipped", exc_info=True)
         log.info("clickhouse.connected", host=self._host, port=self._port)
 
     async def disconnect(self) -> None:
@@ -164,18 +173,20 @@ class ClickHouseStore:
             Decimal(str(trade_data.get("position_size", 0))),
             Decimal(str(trade_data.get("pnl", 0))),
             Decimal(str(trade_data.get("fee_cost", 0))),
-            trade_data.get("entry_time", datetime.now(tz=timezone.utc)),
-            trade_data.get("exit_time", datetime.now(tz=timezone.utc)),
+            trade_data.get("entry_time", datetime.now(tz=UTC)),
+            trade_data.get("exit_time", datetime.now(tz=UTC)),
             trade_data.get("exit_reason", ""),
             trade_data.get("window_minute", 0),
             float(trade_data.get("cum_return_pct", 0.0)),
             float(trade_data.get("confidence", 0.0)),
+            trade_data.get("signal_details", ""),
         ]
         column_names = [
             "trade_id", "market_id", "strategy", "direction",
             "entry_price", "exit_price", "position_size", "pnl", "fee_cost",
             "entry_time", "exit_time", "exit_reason",
             "window_minute", "cum_return_pct", "confidence",
+            "signal_details",
         ]
         await asyncio.to_thread(
             self._client.insert,
@@ -202,7 +213,7 @@ class ClickHouseStore:
             event_data.get("market_id", ""),
             event_data.get("strategy", ""),
             details,
-            event_data.get("timestamp", datetime.now(tz=timezone.utc)),
+            event_data.get("timestamp", datetime.now(tz=UTC)),
         ]
         column_names = [
             "event_id", "order_id", "event_type",
@@ -237,7 +248,7 @@ class ClickHouseStore:
             parameters={"start": start, "end": end},
         )
         columns = result.column_names
-        return [dict(zip(columns, row)) for row in result.result_rows]
+        return [dict(zip(columns, row, strict=False)) for row in result.result_rows]
 
     async def get_daily_pnl(self, target_date: date) -> list[dict[str, Any]]:
         """Aggregate daily P&L by strategy.
@@ -255,7 +266,7 @@ class ClickHouseStore:
             parameters={"date": target_date},
         )
         columns = result.column_names
-        return [dict(zip(columns, row)) for row in result.result_rows]
+        return [dict(zip(columns, row, strict=False)) for row in result.result_rows]
 
     async def get_strategy_performance(
         self,
@@ -278,4 +289,4 @@ class ClickHouseStore:
         if not result.result_rows:
             return None
         columns = result.column_names
-        return dict(zip(columns, result.result_rows[0]))
+        return dict(zip(columns, result.result_rows[0], strict=False))

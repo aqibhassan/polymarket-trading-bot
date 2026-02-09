@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -105,7 +105,7 @@ class ExitManager:
             return True, ExitReason.TRAILING_STOP
 
         # 4. Max hold time
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         held_seconds = (now - position.entry_time).total_seconds()
         if held_seconds >= self._max_hold_seconds:
             log.info(

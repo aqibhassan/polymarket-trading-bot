@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -94,4 +94,4 @@ class TimeOfDayAnalyzer:
 
     def get_current_adjustment(self) -> TimeOfDayAdjustment:
         """Get adjustment for the current UTC hour."""
-        return self.get_adjustment(datetime.now(tz=timezone.utc).hour)
+        return self.get_adjustment(datetime.now(tz=UTC).hour)

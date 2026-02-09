@@ -11,38 +11,67 @@ import {
   Cell,
 } from 'recharts';
 import { StatCard } from '@/components/charts/stat-card';
+import { MetricsGrid } from '@/components/charts/metrics-grid';
 import { EquityCurve } from '@/components/charts/equity-curve';
+import { SignalComboChart } from '@/components/charts/signal-combo-chart';
 import { TradesTable } from '@/components/charts/trades-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { StrategyPerformance, Trade } from '@/lib/types/trade';
+import type { StrategyPerformance, Trade, AdvancedMetrics, SignalComboWinRate } from '@/lib/types/trade';
 
 export default function PerformancePage() {
   const [perf, setPerf] = useState<StrategyPerformance | null>(null);
   const [equityData, setEquityData] = useState<Array<{ time: string; cumulative_pnl: number }>>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [advancedMetrics, setAdvancedMetrics] = useState<AdvancedMetrics | null>(null);
+  const [signalCombos, setSignalCombos] = useState<SignalComboWinRate[]>([]);
+  const [strategy, setStrategy] = useState('singularity');
+
+  // Detect active strategy from SSE heartbeat
+  useEffect(() => {
+    const es = new EventSource('/api/sse');
+    const handler = (event: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(event.data);
+        if (parsed.type === 'bot-state' && parsed.data?.heartbeat?.strategy) {
+          setStrategy(parsed.data.heartbeat.strategy);
+          es.close();
+        }
+      } catch { /* ignore */ }
+    };
+    es.onmessage = handler;
+    // Close after 5s regardless
+    const timeout = setTimeout(() => es.close(), 5000);
+    return () => { es.close(); clearTimeout(timeout); };
+  }, []);
 
   useEffect(() => {
     const fetchAll = async () => {
       try {
-        const [perfRes, equityRes, tradesRes] = await Promise.all([
-          fetch('/api/performance?strategy=momentum_confirmation'),
-          fetch('/api/equity-curve'),
-          fetch('/api/trades?limit=100'),
+        const [perfRes, equityRes, tradesRes, metricsRes, combosRes] = await Promise.all([
+          fetch(`/api/performance?strategy=${strategy}`),
+          fetch(`/api/equity-curve?strategy=${strategy}`),
+          fetch(`/api/trades?limit=100&strategy=${strategy}`),
+          fetch(`/api/metrics?strategy=${strategy}`),
+          fetch(`/api/signal-combos?strategy=${strategy}`),
         ]);
         const perfData = await perfRes.json();
         const equityJson = await equityRes.json();
         const tradesData = await tradesRes.json();
+        const metricsData = await metricsRes.json();
+        const combosData = await combosRes.json();
 
         setPerf(perfData);
         setEquityData(equityJson.data || []);
         setTrades(tradesData.trades || []);
+        setAdvancedMetrics(metricsData.total_trades ? metricsData : null);
+        setSignalCombos(combosData.combos || []);
       } catch { /* fetch failed */ }
     };
 
     fetchAll();
     const interval = setInterval(fetchAll, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [strategy]);
 
   const winRate = perf && perf.trade_count > 0
     ? ((perf.win_count / perf.trade_count) * 100).toFixed(1)
@@ -88,6 +117,9 @@ export default function PerformancePage() {
         <StatCard title="Avg Position" value={perf ? `$${Number(perf.avg_position_size).toFixed(2)}` : '—'} />
         <StatCard title="Avg Confidence" value={perf ? `${(Number(perf.avg_confidence) * 100).toFixed(1)}%` : '—'} />
       </div>
+
+      {/* Advanced Metrics Grid */}
+      <MetricsGrid metrics={advancedMetrics} />
 
       {/* Full Equity Curve */}
       <Card>
@@ -153,6 +185,9 @@ export default function PerformancePage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Signal Combo Chart + Table */}
+      <SignalComboChart combos={signalCombos} />
 
       {/* Trade History */}
       <Card>

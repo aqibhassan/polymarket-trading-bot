@@ -41,6 +41,43 @@ export interface WsStatus {
   polymarket: boolean;
 }
 
+export interface LastTrade {
+  trade_id: string;
+  direction: string;
+  entry_price: string;
+  exit_price: string;
+  pnl: string;
+  exit_reason: string;
+  window_minute: number;
+  confidence: number;
+  timestamp: string;
+}
+
+export interface SignalVote {
+  name: string;
+  direction: string;
+  strength: number;
+}
+
+export interface SignalBreakdown {
+  timestamp: string;
+  minute: number;
+  votes: SignalVote[];
+  overall_confidence: number;
+  direction: string;
+  entry_generated: boolean;
+}
+
+export interface SizingDetails {
+  kelly_fraction: string;
+  recommended_size: string;
+  max_allowed: string;
+  capped_reason: string;
+  balance: string;
+  entry_price: string;
+  estimated_win_prob: string;
+}
+
 export interface BotState {
   heartbeat: BotHeartbeat | null;
   balance: BotBalance | null;
@@ -48,6 +85,9 @@ export interface BotState {
   window: BotWindow | null;
   daily: BotDaily | null;
   ws_status: WsStatus | null;
+  last_trade: LastTrade | null;
+  signals: SignalBreakdown | null;
+  sizing: SizingDetails | null;
 }
 
 export interface HealthStatus {

@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 
 def _confirm_live_trading() -> bool:
     """Prompt the user to confirm live trading. Returns True if confirmed."""
-    print(  # noqa: T201
+    print(
         "\n*** WARNING: You are about to start LIVE trading with REAL funds. ***\n"
         "Type 'YES' to confirm: ",
         end="",
@@ -64,7 +64,7 @@ class ExecutionBridge:
         if mode == "live" and not skip_confirmation:
             if not _confirm_live_trading():
                 logger.warning("live_trading_declined")
-                print("Live trading declined. Exiting.", file=sys.stderr)  # noqa: T201
+                print("Live trading declined. Exiting.", file=sys.stderr)
                 msg = "Live trading requires explicit confirmation"
                 raise SystemExit(msg)
             logger.info("live_trading_confirmed")

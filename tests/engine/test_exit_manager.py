@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from src.engine.exit_manager import ExitManager
@@ -22,7 +22,7 @@ def _make_position(
         token_id="token-yes-123",
         entry_price=Decimal(entry_price),
         quantity=Decimal("100"),
-        entry_time=entry_time or datetime.now(timezone.utc),
+        entry_time=entry_time or datetime.now(UTC),
         stop_loss=Decimal(stop_loss),
         take_profit=Decimal(take_profit),
     )
@@ -76,7 +76,7 @@ class TestExitManager:
     def test_max_time_exit(self, config_loader) -> None:
         em = ExitManager(config_loader)
         # max_hold_seconds = 420 (7 min)
-        old_time = datetime.now(timezone.utc) - timedelta(seconds=500)
+        old_time = datetime.now(UTC) - timedelta(seconds=500)
         position = _make_position(entry_time=old_time)
         should, reason = em.should_exit(
             position, Decimal("0.41"), _make_market_state()

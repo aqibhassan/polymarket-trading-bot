@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 
@@ -62,7 +62,7 @@ class Signal(BaseModel):
     take_profit: Decimal | None = None
     exit_reason: ExitReason | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
     model_config = {"frozen": True}
 

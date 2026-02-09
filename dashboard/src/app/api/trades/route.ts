@@ -8,9 +8,11 @@ export async function GET(request: NextRequest) {
     const start = searchParams.get('start');
     const end = searchParams.get('end');
 
+    const strategy = searchParams.get('strategy') || undefined;
+
     const trades = start && end
       ? await getTradesInRange(start, end)
-      : await getRecentTrades(limit);
+      : await getRecentTrades(limit, strategy);
 
     return NextResponse.json({ trades });
   } catch {

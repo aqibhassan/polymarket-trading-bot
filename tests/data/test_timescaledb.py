@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,7 +22,7 @@ def sample_candle() -> Candle:
         low=Decimal("49800"),
         close=Decimal("50300"),
         volume=Decimal("123.45"),
-        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
         interval="15m",
     )
 
@@ -91,7 +91,7 @@ class TestTimescaleDBStoreGetCandles:
     async def test_get_candles(self) -> None:
         rows = [
             {
-                "time": datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                "time": datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
                 "exchange": "binance",
                 "symbol": "BTCUSDT",
                 "interval": "15m",
@@ -122,8 +122,8 @@ class TestTimescaleDBStoreGetCandles:
 
         candles = await store.get_candles(
             symbol="BTCUSDT",
-            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            start=datetime(2024, 1, 1, tzinfo=UTC),
+            end=datetime(2024, 1, 2, tzinfo=UTC),
             limit=10,
         )
 
@@ -152,8 +152,8 @@ class TestTimescaleDBStoreGetCandles:
 
         candles = await store.get_candles(
             symbol="BTCUSDT",
-            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            start=datetime(2024, 1, 1, tzinfo=UTC),
+            end=datetime(2024, 1, 2, tzinfo=UTC),
         )
 
         assert candles == []

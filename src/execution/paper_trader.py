@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from src.core.logging import get_logger, log_order_event
@@ -97,7 +97,7 @@ class PaperTrader:
         if side == OrderSide.BUY and cost > self._balance:
             order = order.model_copy(update={
                 "status": OrderStatus.REJECTED,
-                "updated_at": datetime.now(tz=timezone.utc),
+                "updated_at": datetime.now(tz=UTC),
             })
             self._orders[oid] = order
             log_order_event("paper_rejected", oid, reason="insufficient_balance")
@@ -124,7 +124,7 @@ class PaperTrader:
             "status": status,
             "filled_size": fill_size,
             "avg_fill_price": fill_price,
-            "updated_at": datetime.now(tz=timezone.utc),
+            "updated_at": datetime.now(tz=UTC),
         })
         self._orders[oid] = order
 
@@ -145,7 +145,7 @@ class PaperTrader:
                 token_id=token_id,
                 entry_price=fill_price,
                 quantity=fill_size,
-                entry_time=datetime.now(tz=timezone.utc),
+                entry_time=datetime.now(tz=UTC),
                 stop_loss=fill_price * Decimal("0.96"),
                 take_profit=fill_price * Decimal("1.05"),
             )
@@ -159,7 +159,7 @@ class PaperTrader:
 
         order = order.model_copy(update={
             "status": OrderStatus.CANCELLED,
-            "updated_at": datetime.now(tz=timezone.utc),
+            "updated_at": datetime.now(tz=UTC),
         })
         self._orders[order_id] = order
         log_order_event("paper_cancel", order_id)

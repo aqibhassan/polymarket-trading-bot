@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.engine.time_of_day import TimeOfDayAnalyzer, _DEFAULT_HOUR_STATS
+from src.engine.time_of_day import TimeOfDayAnalyzer
 
 
 @pytest.fixture()

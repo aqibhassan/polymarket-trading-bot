@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import math
 import signal
+from datetime import UTC
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -61,9 +62,9 @@ class BotOrchestrator:
 
         # Ensure strategy modules are imported for registration
         with contextlib.suppress(ImportError):
-            import src.strategies.false_sentiment  # noqa: F401
+            import src.strategies.false_sentiment
         with contextlib.suppress(ImportError):
-            import src.strategies.reversal_catcher  # noqa: F401
+            import src.strategies.reversal_catcher
         with contextlib.suppress(ImportError):
             import src.strategies.singularity  # noqa: F401
 
@@ -202,9 +203,9 @@ class BotOrchestrator:
         ws_connected: bool = False,
     ) -> None:
         """Publish bot state to Redis for dashboard consumption."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         try:
             # Heartbeat
             uptime_s = (now - start_time).total_seconds()
@@ -281,14 +282,20 @@ class BotOrchestrator:
         confidence: float,
         fee_cost: Any = Decimal("0"),
         pnl: Any = Decimal("0"),
-    ) -> None:
-        """Record a completed trade to ClickHouse for dashboard display."""
-        import uuid
-        from datetime import datetime, timezone
+        signal_details: str = "",
+    ) -> str:
+        """Record a completed trade to ClickHouse for dashboard display.
 
-        exit_time = datetime.now(tz=timezone.utc)
+        Returns:
+            The trade_id of the recorded trade.
+        """
+        import uuid
+        from datetime import datetime
+
+        exit_time = datetime.now(tz=UTC)
+        trade_id = f"paper-{uuid.uuid4().hex[:8]}"
         trade_data = {
-            "trade_id": f"paper-{uuid.uuid4().hex[:8]}",
+            "trade_id": trade_id,
             "market_id": market_id,
             "strategy": self._strategy_name,
             "direction": direction,
@@ -303,6 +310,7 @@ class BotOrchestrator:
             "window_minute": window_minute,
             "cum_return_pct": cum_return_pct,
             "confidence": confidence,
+            "signal_details": signal_details,
         }
         try:
             await ch_store.insert_trade(trade_data)
@@ -322,6 +330,7 @@ class BotOrchestrator:
             )
         except Exception:
             logger.warning("clickhouse_trade_record_failed", exc_info=True)
+        return trade_id
 
     async def _run_swing_loop(self) -> None:
         """Core loop for 1m swing trading mode.
@@ -332,10 +341,11 @@ class BotOrchestrator:
 
         Uses Kelly position sizing and real Portfolio drawdown tracking.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from src.data.binance_futures_ws import BinanceFuturesWSFeed
         from src.data.binance_ws import BinanceWSFeed
+        from src.data.clickhouse_store import ClickHouseStore
         from src.data.polymarket_scanner import PolymarketScanner
         from src.execution.bridge import ExecutionBridge
         from src.execution.paper_trader import PaperTrader
@@ -346,7 +356,6 @@ class BotOrchestrator:
         from src.risk.kill_switch import KillSwitch
         from src.risk.portfolio import Portfolio
         from src.risk.position_sizer import PositionSize, PositionSizer
-        from src.data.clickhouse_store import ClickHouseStore
         from src.risk.risk_manager import RiskManager
 
         # --- Config ---
@@ -430,7 +439,7 @@ class BotOrchestrator:
         last_entry_side: str | None = None
         last_entry_time: datetime | None = None
         last_position_size: Decimal | None = None
-        start_time = datetime.now(tz=timezone.utc)
+        start_time = datetime.now(tz=UTC)
         last_confidence: float = 0.0
         last_entry_minute: int = 0
         last_cum_return_entry: float = 0.0
@@ -438,7 +447,8 @@ class BotOrchestrator:
         last_token_id: str | None = None
         last_tick_yes_price = Decimal("0.5")
         last_market_id: str | None = None
-        last_reset_date = datetime.now(tz=timezone.utc).date()
+        last_reset_date = datetime.now(tz=UTC).date()
+        last_signal_details_str: str = ""
 
         logger.info(
             "swing_loop_started",
@@ -453,7 +463,7 @@ class BotOrchestrator:
                 self._touch_sentinel(_HEARTBEAT_FILE)
 
                 # Daily stats reset at UTC midnight
-                now_utc = datetime.now(tz=timezone.utc)
+                now_utc = datetime.now(tz=UTC)
                 if now_utc.date() != last_reset_date:
                     daily_pnl = Decimal("0")
                     trade_count = 0
@@ -497,10 +507,10 @@ class BotOrchestrator:
                                 / float(window_open_price)
                             )
                         else:
-                            final_cum_return = cum_return  # fallback
+                            final_cum_return = 0.0  # fallback: no data
                             logger.warning(
                                 "swing_window_close_fallback",
-                                fallback_cum_return=cum_return,
+                                fallback_cum_return=0.0,
                                 window_open_price=str(window_open_price),
                                 has_candles=bool(window_candles),
                                 msg="using stale cum_return — window_candles or open_price unavailable",
@@ -533,8 +543,9 @@ class BotOrchestrator:
                             win_count += 1
                         else:
                             loss_count += 1
+                        trade_id_wb = ""
                         if ch_store is not None:
-                            await self._record_completed_trade(
+                            trade_id_wb = await self._record_completed_trade(
                                 ch_store,
                                 market_id=close_market_id,
                                 direction=last_entry_side or "YES",
@@ -550,7 +561,23 @@ class BotOrchestrator:
                                 confidence=last_confidence,
                                 fee_cost=last_fee_cost,
                                 pnl=pnl_wb,
+                                signal_details=last_signal_details_str,
                             )
+                        # Publish last trade to Redis for dashboard
+                        try:
+                            await cache.set("bot:last_trade", {
+                                "trade_id": trade_id_wb,
+                                "direction": last_entry_side or "YES",
+                                "entry_price": str(last_entry_price),
+                                "exit_price": str(exit_price_wb),
+                                "pnl": str(pnl_wb),
+                                "exit_reason": "settlement",
+                                "window_minute": last_entry_minute,
+                                "confidence": last_confidence,
+                                "timestamp": datetime.now(tz=UTC).isoformat(),
+                            }, ttl=300)
+                        except Exception:
+                            logger.debug("last_trade_publish_failed", exc_info=True)
                         logger.info(
                             "swing_window_force_close",
                             window_start=current_window_start,
@@ -602,7 +629,7 @@ class BotOrchestrator:
 
                     logger.info(
                         "swing_window_new",
-                        window_start=datetime.fromtimestamp(w_start, tz=timezone.utc).isoformat(),
+                        window_start=datetime.fromtimestamp(w_start, tz=UTC).isoformat(),
                         open_price=str(window_open_price),
                     )
 
@@ -715,13 +742,13 @@ class BotOrchestrator:
                         orderbook = await scanner.get_market_orderbook(yes_token_id)
                     else:
                         orderbook = OrderBookSnapshot(
-                            timestamp=datetime.now(tz=timezone.utc),
+                            timestamp=datetime.now(tz=UTC),
                             market_id=market_id,
                         )
                 except Exception:
                     logger.debug("orderbook_fetch_failed", market_id=market_id, exc_info=True)
                     orderbook = OrderBookSnapshot(
-                        timestamp=datetime.now(tz=timezone.utc),
+                        timestamp=datetime.now(tz=UTC),
                         market_id=market_id,
                     )
 
@@ -729,6 +756,47 @@ class BotOrchestrator:
                 signals = self._strategy.generate_signals(
                     market_state, orderbook, context,
                 )
+
+                # Publish signal breakdown to Redis for dashboard
+                last_signal_details = ""
+                try:
+                    entry_signals = [
+                        s for s in signals
+                        if s.signal_type == SignalType.ENTRY
+                    ]
+                    votes_str = ""
+                    if entry_signals:
+                        votes_str = entry_signals[0].metadata.get("votes", "")
+                    # Parse vote string into structured data
+                    parsed_votes = []
+                    if votes_str:
+                        import json as _json
+                        for part in votes_str.split(", "):
+                            # Format: "name=DIR(strength)"
+                            eq = part.find("=")
+                            paren = part.find("(")
+                            if eq > 0 and paren > eq:
+                                vname = part[:eq]
+                                vdir = part[eq + 1:paren]
+                                vstr = part[paren + 1:].rstrip(")")
+                                parsed_votes.append({
+                                    "name": vname,
+                                    "direction": vdir,
+                                    "strength": round(float(vstr) * 100, 1),
+                                })
+                        last_signal_details = _json.dumps(parsed_votes)
+                    overall_conf = entry_signals[0].confidence.overall if entry_signals and entry_signals[0].confidence else 0.0
+                    overall_dir = entry_signals[0].metadata.get("direction", "").upper() if entry_signals else ""
+                    await cache.set("bot:signals", {
+                        "timestamp": datetime.now(tz=UTC).isoformat(),
+                        "minute": minute_in_window,
+                        "votes": parsed_votes,
+                        "overall_confidence": round(overall_conf, 4),
+                        "direction": overall_dir,
+                        "entry_generated": bool(entry_signals),
+                    }, ttl=120)
+                except Exception:
+                    logger.debug("signal_publish_failed", exc_info=True)
 
                 for sig in signals:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position:
@@ -752,6 +820,20 @@ class BotOrchestrator:
                             )
                             position_size = sizing.recommended_size
 
+                        # Publish sizing details to Redis for dashboard
+                        try:
+                            await cache.set("bot:sizing", {
+                                "kelly_fraction": str(sizing.kelly_fraction),
+                                "recommended_size": str(sizing.recommended_size),
+                                "max_allowed": str(sizing.max_allowed),
+                                "capped_reason": sizing.capped_reason or "none",
+                                "balance": str(paper_trader.balance),
+                                "entry_price": str(entry_price),
+                                "estimated_win_prob": str(estimated_win_prob),
+                            }, ttl=120)
+                        except Exception:
+                            logger.debug("sizing_publish_failed", exc_info=True)
+
                         if position_size <= 0:
                             logger.info(
                                 "swing_entry_skip_no_edge",
@@ -762,14 +844,16 @@ class BotOrchestrator:
                             continue
 
                         # Cost check — reduce position size to leave room for fees
+                        # position_size is shares; actual USDC cost = shares * entry_price
                         costs = cost_calculator.calculate_binary(
                             entry_price=entry_price,
                             position_size=position_size,
                         )
-                        # Ensure position + fees fits within max_position_pct cap
+                        # Ensure USDC cost + fees fits within max_position_pct cap
                         max_allowed = paper_trader.balance * max_position_pct
-                        if position_size + costs.fee_cost > max_allowed and costs.fee_cost > 0:
-                            position_size = max_allowed - costs.fee_cost
+                        usdc_cost = position_size * entry_price + costs.fee_cost
+                        if usdc_cost > max_allowed and costs.fee_cost > 0:
+                            position_size = (max_allowed - costs.fee_cost) / entry_price
                             if position_size <= 0:
                                 continue
                             # Recalculate fees at reduced size
@@ -809,7 +893,7 @@ class BotOrchestrator:
                             trade_count += 1
                             last_entry_price = actual_fill_price
                             last_entry_side = sig.direction.value
-                            last_entry_time = datetime.now(tz=timezone.utc)
+                            last_entry_time = datetime.now(tz=UTC)
                             last_position_size = actual_fill_size
                             last_confidence = sig.confidence.overall if sig.confidence else 0.0
                             last_entry_minute = minute_in_window
@@ -817,6 +901,7 @@ class BotOrchestrator:
                             last_fee_cost = costs.fee_cost
                             last_token_id = token_id
                             last_market_id = market_id
+                            last_signal_details_str = last_signal_details
                             # Record entry audit event
                             if ch_store is not None:
                                 try:
@@ -890,8 +975,10 @@ class BotOrchestrator:
                             win_count += 1
                         else:
                             loss_count += 1
+                        exit_reason_str = str(sig.exit_reason) if sig.exit_reason else "signal_exit"
+                        trade_id_ex = ""
                         if ch_store is not None:
-                            await self._record_completed_trade(
+                            trade_id_ex = await self._record_completed_trade(
                                 ch_store,
                                 market_id=market_id,
                                 direction=last_entry_side or "YES",
@@ -901,16 +988,32 @@ class BotOrchestrator:
                                     last_position_size or Decimal("0")
                                 ),
                                 entry_time=last_entry_time,
-                                exit_reason=str(sig.exit_reason) if sig.exit_reason else "signal_exit",
+                                exit_reason=exit_reason_str,
                                 window_minute=last_entry_minute,
                                 cum_return_pct=cum_return * 100,
                                 confidence=last_confidence,
                                 fee_cost=last_fee_cost,
                                 pnl=pnl_ex,
+                                signal_details=last_signal_details_str,
                             )
+                        # Publish last trade to Redis for dashboard
+                        try:
+                            await cache.set("bot:last_trade", {
+                                "trade_id": trade_id_ex,
+                                "direction": last_entry_side or "YES",
+                                "entry_price": str(last_entry_price or Decimal("0")),
+                                "exit_price": str(exit_price_ex),
+                                "pnl": str(pnl_ex),
+                                "exit_reason": exit_reason_str,
+                                "window_minute": last_entry_minute,
+                                "confidence": last_confidence,
+                                "timestamp": datetime.now(tz=UTC).isoformat(),
+                            }, ttl=300)
+                        except Exception:
+                            logger.debug("last_trade_publish_failed", exc_info=True)
                         logger.info(
                             "swing_exit_executed",
-                            reason=str(sig.exit_reason),
+                            reason=exit_reason_str,
                             pnl=str(pnl_ex),
                             balance=str(paper_trader.balance),
                         )
@@ -998,7 +1101,6 @@ def run_backtest(
         Exit code (0 = success, 1 = failure).
     """
     import math
-    from datetime import datetime, timezone
     from pathlib import Path
 
     from src.backtesting.data_loader import DataLoader
@@ -1071,9 +1173,9 @@ def run_backtest(
     import contextlib
 
     with contextlib.suppress(ImportError):
-        import src.strategies.false_sentiment  # noqa: F401
+        import src.strategies.false_sentiment
     with contextlib.suppress(ImportError):
-        import src.strategies.reversal_catcher  # noqa: F401
+        import src.strategies.reversal_catcher
     with contextlib.suppress(ImportError):
         import src.strategies.singularity  # noqa: F401
 

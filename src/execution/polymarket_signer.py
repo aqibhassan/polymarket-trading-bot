@@ -8,16 +8,13 @@ environment variables -- nothing is ever hardcoded.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from src.core.logging import get_logger, log_order_event
 from src.execution.rate_limiter import TokenBucketRateLimiter
 from src.models.order import Order, OrderSide, OrderStatus, OrderType
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
@@ -41,7 +38,7 @@ def _clob_order_type(order_type: OrderType) -> Any:
     Import is deferred to avoid module-level import failures when
     py-clob-client's dependency chain is incomplete (dev/test).
     """
-    from py_clob_client.clob_types import OrderType as ClobOrderType  # noqa: PLC0415
+    from py_clob_client.clob_types import OrderType as ClobOrderType
 
     if order_type == OrderType.GTC:
         return ClobOrderType.GTC
@@ -59,7 +56,7 @@ def _create_clob_client(
     signature_type: int,
 ) -> Any:
     """Create a ClobClient instance with deferred import."""
-    from py_clob_client.client import ClobClient  # noqa: PLC0415
+    from py_clob_client.client import ClobClient
 
     return ClobClient(
         host=host,
@@ -77,7 +74,7 @@ def _create_order_args(
     side: str,
 ) -> Any:
     """Create OrderArgs with deferred import."""
-    from py_clob_client.clob_types import OrderArgs  # noqa: PLC0415
+    from py_clob_client.clob_types import OrderArgs
 
     return OrderArgs(
         token_id=token_id,
@@ -215,7 +212,7 @@ class PolymarketLiveTrader:
                 )
                 order = order.model_copy(update={
                     "status": OrderStatus.REJECTED,
-                    "updated_at": datetime.now(tz=timezone.utc),
+                    "updated_at": datetime.now(tz=UTC),
                     "metadata": {"reject_reason": str(error_msg)},
                 })
                 self._orders[oid] = order
@@ -225,7 +222,7 @@ class PolymarketLiveTrader:
             order = order.model_copy(update={
                 "status": OrderStatus.SUBMITTED,
                 "exchange_order_id": str(exchange_id),
-                "updated_at": datetime.now(tz=timezone.utc),
+                "updated_at": datetime.now(tz=UTC),
             })
             self._orders[oid] = order
             log_order_event(
@@ -236,7 +233,7 @@ class PolymarketLiveTrader:
         except Exception as exc:
             order = order.model_copy(update={
                 "status": OrderStatus.REJECTED,
-                "updated_at": datetime.now(tz=timezone.utc),
+                "updated_at": datetime.now(tz=UTC),
             })
             self._orders[oid] = order
             log_order_event("live_rejected", oid, reason=str(exc))
@@ -265,7 +262,7 @@ class PolymarketLiveTrader:
             if cancelled:
                 order = order.model_copy(update={
                     "status": OrderStatus.CANCELLED,
-                    "updated_at": datetime.now(tz=timezone.utc),
+                    "updated_at": datetime.now(tz=UTC),
                 })
                 self._orders[order_id] = order
                 log_order_event("live_cancelled", order_id)

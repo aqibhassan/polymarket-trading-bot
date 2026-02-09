@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -129,7 +129,7 @@ class PolymarketClient:
         return OrderBookSnapshot(
             bids=bids,
             asks=asks,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=UTC),
             market_id=token_id,
         )
 

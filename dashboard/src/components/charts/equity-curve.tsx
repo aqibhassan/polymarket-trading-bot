@@ -16,6 +16,20 @@ export function EquityCurve({ data, height = 300 }: EquityCurveProps) {
     );
   }
 
+  // Smart x-axis: show HH:MM for short spans (<3 days), date for longer spans
+  const firstTime = data[0]?.time ? new Date(data[0].time).getTime() : 0;
+  const lastTime = data[data.length - 1]?.time ? new Date(data[data.length - 1].time).getTime() : 0;
+  const spanDays = (lastTime - firstTime) / 86400000;
+  const showTime = spanDays < 3;
+
+  const formatXAxis = (val: string) => {
+    const d = new Date(val);
+    if (showTime) {
+      return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
@@ -24,7 +38,7 @@ export function EquityCurve({ data, height = 300 }: EquityCurveProps) {
           dataKey="time"
           stroke="#71717a"
           fontSize={12}
-          tickFormatter={(val: string) => new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+          tickFormatter={formatXAxis}
         />
         <YAxis stroke="#71717a" fontSize={12} tickFormatter={(val: number) => `$${val.toFixed(2)}`} />
         <Tooltip

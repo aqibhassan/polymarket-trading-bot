@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -211,7 +211,7 @@ class DataLoader:
             pass
         try:
             epoch = float(raw)
-            return datetime.fromtimestamp(epoch, tz=timezone.utc)
+            return datetime.fromtimestamp(epoch, tz=UTC)
         except (ValueError, OverflowError):
             pass
         msg = f"Unparseable timestamp: {raw}"

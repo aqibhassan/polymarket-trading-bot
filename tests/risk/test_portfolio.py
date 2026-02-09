@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from src.models.market import Position, Side
@@ -23,7 +23,7 @@ def _make_position(
         token_id="tok-1",
         entry_price=entry_price,
         quantity=quantity,
-        entry_time=datetime.now(tz=timezone.utc),
+        entry_time=datetime.now(tz=UTC),
         stop_loss=stop_loss,
         take_profit=take_profit,
     )
@@ -77,7 +77,7 @@ class TestClosePosition:
     def test_close_with_custom_exit_time(self) -> None:
         p = Portfolio()
         p.add_position(_make_position(market_id="m1"))
-        exit_time = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        exit_time = datetime(2025, 6, 15, 12, 0, 0, tzinfo=UTC)
         closed = p.close_position(
             market_id="m1",
             exit_price=Decimal("0.55"),

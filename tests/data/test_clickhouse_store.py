@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +15,6 @@ from src.data.clickhouse_store import (
     CREATE_TRADES_TABLE,
     ClickHouseStore,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -63,8 +62,8 @@ def sample_trade() -> dict:
         "position_size": Decimal("100"),
         "pnl": Decimal("7.00"),
         "fee_cost": Decimal("0.20"),
-        "entry_time": datetime(2024, 6, 1, 10, 0, 0, tzinfo=timezone.utc),
-        "exit_time": datetime(2024, 6, 1, 10, 15, 0, tzinfo=timezone.utc),
+        "entry_time": datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC),
+        "exit_time": datetime(2024, 6, 1, 10, 15, 0, tzinfo=UTC),
         "exit_reason": "PROFIT_TARGET",
         "window_minute": 8,
         "cum_return_pct": 12.7,
@@ -81,7 +80,7 @@ def sample_audit_event() -> dict:
         "market_id": "market-abc",
         "strategy": "micro_vol",
         "details": {"action": "submit", "price": "0.55"},
-        "timestamp": datetime(2024, 6, 1, 10, 0, 0, tzinfo=timezone.utc),
+        "timestamp": datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC),
     }
 
 
@@ -134,13 +133,14 @@ class TestClickHouseStoreConnect:
             await store.connect()
 
         assert store._client is mock_client
-        # Should create database + 3 tables
-        assert mock_client.command.call_count == 4
+        # Should create database + 3 tables + 1 migration (signal_details column)
+        assert mock_client.command.call_count == 5
         calls = [c.args[0] for c in mock_client.command.call_args_list]
         assert calls[0] == CREATE_DB
         assert calls[1] == CREATE_TRADES_TABLE
         assert calls[2] == CREATE_AUDIT_EVENTS_TABLE
         assert calls[3] == CREATE_DAILY_SUMMARY_TABLE
+        assert "signal_details" in calls[4]
 
     @pytest.mark.asyncio()
     async def test_disconnect(self, connected_store: ClickHouseStore, mock_client: MagicMock) -> None:
@@ -243,7 +243,7 @@ class TestClickHouseStoreInsertAuditEvent:
             "market_id": "m1",
             "strategy": "s1",
             "details": '{"price": "0.55"}',
-            "timestamp": datetime(2024, 6, 1, tzinfo=timezone.utc),
+            "timestamp": datetime(2024, 6, 1, tzinfo=UTC),
         }
         with patch("src.data.clickhouse_store.asyncio.to_thread", side_effect=_fake_to_thread):
             await connected_store.insert_audit_event(event)
@@ -273,8 +273,8 @@ class TestClickHouseStoreGetTrades:
 
         with patch("src.data.clickhouse_store.asyncio.to_thread", side_effect=_fake_to_thread):
             trades = await connected_store.get_trades(
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 12, 31, tzinfo=timezone.utc),
+                start=datetime(2024, 1, 1, tzinfo=UTC),
+                end=datetime(2024, 12, 31, tzinfo=UTC),
             )
 
         assert len(trades) == 2
@@ -295,8 +295,8 @@ class TestClickHouseStoreGetTrades:
 
         with patch("src.data.clickhouse_store.asyncio.to_thread", side_effect=_fake_to_thread):
             trades = await connected_store.get_trades(
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                start=datetime(2024, 1, 1, tzinfo=UTC),
+                end=datetime(2024, 1, 2, tzinfo=UTC),
             )
         assert trades == []
 
@@ -408,6 +408,6 @@ class TestClickHouseStoreUnavailable:
         s = ClickHouseStore()
         with pytest.raises(AssertionError, match="connect"):
             await s.get_trades(
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                start=datetime(2024, 1, 1, tzinfo=UTC),
+                end=datetime(2024, 1, 2, tzinfo=UTC),
             )

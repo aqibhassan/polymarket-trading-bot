@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import json
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -149,7 +149,7 @@ class BinanceWSFeed:
             low=Decimal(str(kline["l"])),
             close=Decimal(str(kline["c"])),
             volume=Decimal(str(kline["v"])),
-            timestamp=datetime.fromtimestamp(kline["t"] / 1000, tz=timezone.utc),
+            timestamp=datetime.fromtimestamp(kline["t"] / 1000, tz=UTC),
             interval=self._interval,
         )
 

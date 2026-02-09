@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -133,7 +133,7 @@ class PolymarketWSFeed:
             return
 
         msg_type = data.get("type", "")
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
 
         if msg_type == "market" and self._on_market_state is not None:
             self._emit_market_state(data, now)

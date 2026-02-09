@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -71,7 +71,7 @@ class Portfolio:
         Returns:
             The closed position, or None if not found.
         """
-        exit_t = exit_time or datetime.now(tz=timezone.utc)
+        exit_t = exit_time or datetime.now(tz=UTC)
 
         for i, pos in enumerate(self._open):
             if pos.market_id == market_id:

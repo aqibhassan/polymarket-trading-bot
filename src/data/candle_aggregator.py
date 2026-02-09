@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from src.core.logging import get_logger
@@ -46,13 +46,13 @@ class CandleAggregator:
         the local clock and the exchange server clock.
         """
         if ts.tzinfo is None:
-            epoch = int(ts.replace(tzinfo=timezone.utc).timestamp())
+            epoch = int(ts.replace(tzinfo=UTC).timestamp())
         else:
             epoch = int(ts.timestamp())
         # Apply clock skew correction (offset in ms -> s)
         epoch += self._server_time_offset_ms // 1000
         bucket = epoch - (epoch % self._interval_seconds)
-        return datetime.fromtimestamp(bucket, tz=timezone.utc)
+        return datetime.fromtimestamp(bucket, tz=UTC)
 
     def add_tick(
         self,

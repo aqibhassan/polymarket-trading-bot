@@ -127,18 +127,22 @@ class CostCalculator:
 
         Uses the Polymarket dynamic fee curve instead of a flat rate.
 
+        The ``position_size`` is the number of shares (as passed to the order
+        bridge).  The actual USDC notional is ``position_size * entry_price``.
+
         Args:
             entry_price: Contract price (0 < P < 1).
-            position_size: Dollar amount of the trade.
+            position_size: Number of shares (quantity passed to the bridge).
             spread: Current bid-ask spread.
 
         Returns:
             TradeCost with breakdown.
         """
-        num_shares = position_size / entry_price if entry_price > 0 else Decimal("0")
+        num_shares = position_size
+        notional = num_shares * entry_price  # actual USDC wagered
         spread_cost = (spread / Decimal("2")) * num_shares
-        fee_cost = self.polymarket_fee(position_size, entry_price)
-        slippage_cost = position_size * (self._slippage_bps / Decimal("10000"))
+        fee_cost = self.polymarket_fee(notional, entry_price)
+        slippage_cost = notional * (self._slippage_bps / Decimal("10000"))
         total_cost = spread_cost + fee_cost + slippage_cost
         min_profitable_move = total_cost / num_shares if num_shares > 0 else Decimal("0")
 

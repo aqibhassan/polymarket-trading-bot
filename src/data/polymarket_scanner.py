@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -184,7 +184,7 @@ class PolymarketScanner:
         if end_date_str:
             try:
                 end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                now = datetime.now(tz=timezone.utc)
+                now = datetime.now(tz=UTC)
                 remaining = (end_dt - now).total_seconds()
                 time_remaining_seconds = max(0, int(remaining))
             except (ValueError, TypeError):
@@ -381,7 +381,7 @@ class PolymarketScanner:
         return OrderBookSnapshot(
             bids=bids,
             asks=asks,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=UTC),
             market_id=market_id,
         )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC
 from decimal import Decimal
 
 import pytest
@@ -251,10 +252,10 @@ class TestStatePublishing:
     @pytest.mark.asyncio
     async def test_publish_state_heartbeat(self, swing_config, mock_cache, mock_paper_trader):
         """Heartbeat should contain timestamp, uptime, mode, and strategy."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         bot = BotOrchestrator(mode="paper", strategy_name="momentum_confirmation", config=swing_config)
-        start = datetime.now(tz=timezone.utc)
+        start = datetime.now(tz=UTC)
         await bot._publish_state(
             mock_cache,
             start_time=start,
@@ -279,10 +280,10 @@ class TestStatePublishing:
     @pytest.mark.asyncio
     async def test_publish_state_balance(self, swing_config, mock_cache, mock_paper_trader):
         """Balance payload should contain balance, pnl, and pnl_pct."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         bot = BotOrchestrator(mode="paper", strategy_name="momentum_confirmation", config=swing_config)
-        start = datetime.now(tz=timezone.utc)
+        start = datetime.now(tz=UTC)
         await bot._publish_state(
             mock_cache,
             start_time=start,
@@ -310,11 +311,11 @@ class TestStatePublishing:
         self, swing_config, mock_cache, mock_paper_trader, mock_active_market,
     ):
         """Position should be published with market data when position is open."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         bot = BotOrchestrator(mode="paper", strategy_name="momentum_confirmation", config=swing_config)
-        start = datetime.now(tz=timezone.utc)
-        entry_time = datetime.now(tz=timezone.utc)
+        start = datetime.now(tz=UTC)
+        entry_time = datetime.now(tz=UTC)
         await bot._publish_state(
             mock_cache,
             start_time=start,
@@ -344,10 +345,10 @@ class TestStatePublishing:
     @pytest.mark.asyncio
     async def test_publish_state_position_none(self, swing_config, mock_cache, mock_paper_trader):
         """Position should be None when no position is open."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         bot = BotOrchestrator(mode="paper", strategy_name="momentum_confirmation", config=swing_config)
-        start = datetime.now(tz=timezone.utc)
+        start = datetime.now(tz=UTC)
         await bot._publish_state(
             mock_cache,
             start_time=start,
@@ -369,10 +370,10 @@ class TestStatePublishing:
     @pytest.mark.asyncio
     async def test_publish_state_window(self, swing_config, mock_cache, mock_paper_trader):
         """Window payload should contain minute, cum_return_pct, yes_price, btc_close."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         bot = BotOrchestrator(mode="paper", strategy_name="momentum_confirmation", config=swing_config)
-        start = datetime.now(tz=timezone.utc)
+        start = datetime.now(tz=UTC)
         await bot._publish_state(
             mock_cache,
             start_time=start,
@@ -403,10 +404,10 @@ class TestStatePublishing:
     @pytest.mark.asyncio
     async def test_publish_state_daily(self, swing_config, mock_cache, mock_paper_trader):
         """Daily stats should contain trade_count, win_count, loss_count, daily_pnl."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         bot = BotOrchestrator(mode="paper", strategy_name="momentum_confirmation", config=swing_config)
-        start = datetime.now(tz=timezone.utc)
+        start = datetime.now(tz=UTC)
         await bot._publish_state(
             mock_cache,
             start_time=start,
@@ -432,10 +433,10 @@ class TestStatePublishing:
     @pytest.mark.asyncio
     async def test_publish_state_ws_status(self, swing_config, mock_cache, mock_paper_trader):
         """WebSocket status should show binance and polymarket connection state."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         bot = BotOrchestrator(mode="paper", strategy_name="momentum_confirmation", config=swing_config)
-        start = datetime.now(tz=timezone.utc)
+        start = datetime.now(tz=UTC)
         await bot._publish_state(
             mock_cache,
             start_time=start,
