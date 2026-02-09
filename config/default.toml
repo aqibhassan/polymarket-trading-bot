@@ -79,14 +79,16 @@ hard_stop_loss_pct = 0.04
 max_hold_seconds = 420
 
 [risk]
-max_position_pct = 0.02
+max_position_pct = 0.05
+min_position_pct = 0.01
 max_daily_drawdown_pct = 0.05
 max_order_book_pct = 0.10
 min_spread_threshold = 0.02
 min_profitable_move = 0.03
 
 # Kelly position sizing for binary prediction markets
-# f* = (p - P) / (P * (1 - P)), then multiply by kelly_multiplier, cap at max_position_pct
+# f* = (p - P) / (P * (1 - P)), then multiply by kelly_multiplier
+# Floor at min_position_pct (1%), cap at max_position_pct (5%)
 # Quarter-Kelly recommended: balances growth vs drawdown risk
 # Validated: 0% ruin probability, <10% max drawdown at 99th percentile
 kelly_multiplier = 0.25

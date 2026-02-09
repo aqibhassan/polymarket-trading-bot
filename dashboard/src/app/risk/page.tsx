@@ -18,7 +18,7 @@ export default function RiskPage() {
     try {
       const [ksRes, trRes, eqRes] = await Promise.all([
         fetch('/api/kill-switch'),
-        fetch('/api/trades?limit=500'),
+        fetch('/api/trades?limit=1000'),
         fetch('/api/equity-curve'),
       ]);
       const ksData = await ksRes.json();
@@ -51,7 +51,7 @@ export default function RiskPage() {
   let maxConsecLosses = 0;
   let currentStreak = 0;
   for (const t of [...trades].reverse()) {
-    if (Number(t.pnl) < 0) {
+    if (t.pnl < 0) {
       currentStreak++;
       maxConsecLosses = Math.max(maxConsecLosses, currentStreak);
     } else {
@@ -62,14 +62,15 @@ export default function RiskPage() {
   // Drawdown from ClickHouse equity curve (peak-to-trough, accurate across restarts)
   const drawdownLimit = 5; // 5% max daily drawdown
 
-  // Total fees from ClickHouse trades (accurate, not Redis)
-  const totalFees = trades.reduce((s, t) => s + Number(t.fee_cost || 0), 0);
+  // Total fees from ClickHouse trades (numeric coercion done in query layer)
+  const totalFees = trades.reduce((s, t) => s + (t.fee_cost || 0), 0);
 
   // Daily fees from trades
   const dailyFeeMap = new Map<string, number>();
   for (const t of trades) {
-    const day = t.entry_time.split(/[T ]/)[0];
-    dailyFeeMap.set(day, (dailyFeeMap.get(day) || 0) + Number(t.fee_cost || 0));
+    const day = (t.entry_time || '').split(/[T ]/)[0];
+    if (!day) continue;
+    dailyFeeMap.set(day, (dailyFeeMap.get(day) || 0) + (t.fee_cost || 0));
   }
   const feeData = Array.from(dailyFeeMap.entries())
     .map(([date, fees]) => ({ date, fees: Number(fees.toFixed(4)) }))

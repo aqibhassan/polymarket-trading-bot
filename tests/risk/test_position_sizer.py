@@ -1,4 +1,4 @@
-"""Tests for PositionSizer — Half-Kelly with safety caps."""
+"""Tests for PositionSizer — Kelly with min/max caps."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from src.risk.position_sizer import PositionSizer
 
 
 class TestPositionSizer:
-    def test_basic_half_kelly(self) -> None:
+    def test_basic_quarter_kelly(self) -> None:
+        """Default quarter-Kelly with no caps binding."""
         sizer = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             max_order_book_pct=Decimal("1"),
         )
         result = sizer.calculate(
@@ -25,13 +27,33 @@ class TestPositionSizer:
             book_depth=Decimal("1000000"),
         )
         # kelly = 0.6 - (0.4 / 1.0) = 0.2
-        # half_kelly = 0.1
-        # raw_size = 0.1 * 10000 = 1000
+        # quarter_kelly = 0.05
+        # raw_size = 0.05 * 10000 = 500
+        assert result.kelly_fraction == Decimal("0.2")
+        assert result.recommended_size == Decimal("500.0")
+
+    def test_half_kelly_explicit(self) -> None:
+        """Explicit half-Kelly multiplier."""
+        sizer = PositionSizer(
+            max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
+            max_order_book_pct=Decimal("1"),
+            kelly_multiplier=Decimal("0.5"),
+        )
+        result = sizer.calculate(
+            balance=Decimal("10000"),
+            signal_confidence=1.0,
+            win_rate=Decimal("0.6"),
+            avg_win=Decimal("100"),
+            avg_loss=Decimal("100"),
+            book_depth=Decimal("1000000"),
+        )
+        # kelly = 0.2, half = 0.1, raw = 1000
         assert result.kelly_fraction == Decimal("0.2")
         assert result.recommended_size == Decimal("1000.0")
 
     def test_capping_at_max_position_pct(self) -> None:
-        sizer = PositionSizer(max_position_pct=Decimal("0.02"))
+        sizer = PositionSizer(max_position_pct=Decimal("0.02"), min_position_pct=Decimal("0"))
         result = sizer.calculate(
             balance=Decimal("10000"),
             signal_confidence=1.0,
@@ -40,14 +62,15 @@ class TestPositionSizer:
             avg_loss=Decimal("50"),
         )
         # kelly = 0.7 - (0.3 / 2.0) = 0.55
-        # half_kelly = 0.275
-        # raw = 2750, max = 200
+        # quarter_kelly = 0.1375
+        # raw = 1375, max = 200
         assert result.recommended_size == Decimal("200")
         assert "max_position_pct" in (result.capped_reason or "")
 
     def test_capping_at_max_order_book_pct(self) -> None:
         sizer = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             max_order_book_pct=Decimal("0.10"),
         )
         result = sizer.calculate(
@@ -60,6 +83,46 @@ class TestPositionSizer:
         )
         # max_by_book = 1000 * 0.10 = 100
         assert result.recommended_size == Decimal("100")
+        assert "max_order_book_pct" in (result.capped_reason or "")
+
+    def test_min_position_floor(self) -> None:
+        """Small Kelly should be floored at min_position_pct."""
+        sizer = PositionSizer(
+            max_position_pct=Decimal("0.10"),
+            min_position_pct=Decimal("0.01"),
+            kelly_multiplier=Decimal("0.25"),
+        )
+        result = sizer.calculate(
+            balance=Decimal("10000"),
+            signal_confidence=0.1,  # very low confidence → tiny raw size
+            win_rate=Decimal("0.55"),
+            avg_win=Decimal("100"),
+            avg_loss=Decimal("100"),
+        )
+        # kelly = 0.55 - 0.45 = 0.10
+        # quarter = 0.025, * confidence 0.1 = 0.0025
+        # raw = 25 < min 100 → floored
+        assert result.recommended_size == Decimal("100")
+        assert "min_position_pct" in (result.capped_reason or "")
+
+    def test_book_depth_overrides_min_floor(self) -> None:
+        """Book depth cap must override the min floor (liquidity constraint)."""
+        sizer = PositionSizer(
+            max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0.01"),
+            max_order_book_pct=Decimal("0.10"),
+        )
+        result = sizer.calculate(
+            balance=Decimal("100000"),
+            signal_confidence=0.01,  # tiny
+            win_rate=Decimal("0.55"),
+            avg_win=Decimal("100"),
+            avg_loss=Decimal("100"),
+            book_depth=Decimal("500"),
+        )
+        # min_by_balance = 1000, but max_by_book = 50
+        # Floor raises to 1000, then book depth cap overrides to 50
+        assert result.recommended_size == Decimal("50")
         assert "max_order_book_pct" in (result.capped_reason or "")
 
     def test_zero_balance(self) -> None:
@@ -113,6 +176,7 @@ class TestPositionSizer:
     def test_confidence_scaling(self) -> None:
         sizer = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             max_order_book_pct=Decimal("1"),
         )
         full = sizer.calculate(
@@ -157,7 +221,7 @@ class TestPositionSizer:
         assert result.recommended_size == Decimal("0")
 
     def test_no_book_depth_uses_balance_cap(self) -> None:
-        sizer = PositionSizer(max_position_pct=Decimal("0.02"))
+        sizer = PositionSizer(max_position_pct=Decimal("0.02"), min_position_pct=Decimal("0"))
         result = sizer.calculate(
             balance=Decimal("10000"),
             signal_confidence=1.0,
@@ -184,11 +248,13 @@ class TestPositionSizer:
         """Quarter-Kelly should give half the size of half-Kelly."""
         half = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             max_order_book_pct=Decimal("1"),
             kelly_multiplier=Decimal("0.5"),
         )
         quarter = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             max_order_book_pct=Decimal("1"),
             kelly_multiplier=Decimal("0.25"),
         )
@@ -218,6 +284,7 @@ class TestPositionSizerBinary:
         """f* = (p - P) / (P * (1 - P)), then half-Kelly, then * balance."""
         sizer = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             kelly_multiplier=Decimal("0.5"),
         )
         # p=0.90, P=0.65 -> kelly = (0.90-0.65)/(0.65*0.35) = 0.25/0.2275 ≈ 1.0989
@@ -247,14 +314,14 @@ class TestPositionSizerBinary:
 
     def test_binary_capped_at_max_pct(self) -> None:
         """Large edge should still be capped at max_position_pct."""
-        sizer = PositionSizer(max_position_pct=Decimal("0.02"))
+        sizer = PositionSizer(max_position_pct=Decimal("0.02"), min_position_pct=Decimal("0"))
         result = sizer.calculate_binary(
             balance=Decimal("10000"),
             entry_price=Decimal("0.55"),
             estimated_win_prob=Decimal("0.90"),
         )
         # kelly = (0.90-0.55)/(0.55*0.45) ≈ 1.4141
-        # half ≈ 0.7071, raw ≈ 7071, cap = 200
+        # quarter ≈ 0.3535, raw ≈ 3535, cap = 200
         assert result.recommended_size == Decimal("200")
         assert "max_position_pct" in (result.capped_reason or "")
 
@@ -276,6 +343,7 @@ class TestPositionSizerBinary:
         """At P=0.50 with p=0.90, f* = (0.90-0.50)/(0.50*0.50) = 1.60."""
         sizer = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             kelly_multiplier=Decimal("1"),  # full Kelly
         )
         result = sizer.calculate_binary(
@@ -293,10 +361,12 @@ class TestPositionSizerBinary:
         """Quarter-Kelly should size down appropriately."""
         half = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             kelly_multiplier=Decimal("0.5"),
         )
         quarter = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             kelly_multiplier=Decimal("0.25"),
         )
         r_half = half.calculate_binary(
@@ -314,6 +384,7 @@ class TestPositionSizerBinary:
     def test_binary_book_depth_cap(self) -> None:
         sizer = PositionSizer(
             max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0"),
             max_order_book_pct=Decimal("0.10"),
         )
         result = sizer.calculate_binary(
@@ -325,3 +396,67 @@ class TestPositionSizerBinary:
         # max_by_book = 500 * 0.10 = 50
         assert result.recommended_size == Decimal("50")
         assert "max_order_book_pct" in (result.capped_reason or "")
+
+    def test_binary_min_floor(self) -> None:
+        """Small edge should be floored at min_position_pct."""
+        sizer = PositionSizer(
+            max_position_pct=Decimal("0.05"),
+            min_position_pct=Decimal("0.01"),
+            kelly_multiplier=Decimal("0.25"),
+        )
+        # p=0.52, P=0.50 -> kelly = (0.52-0.50)/(0.50*0.50) = 0.02/0.25 = 0.08
+        # quarter_kelly = 0.02, raw = 200
+        # min = 10000 * 0.01 = 100, max = 500
+        # 200 > 100, not floored
+        result = sizer.calculate_binary(
+            balance=Decimal("10000"),
+            entry_price=Decimal("0.50"),
+            estimated_win_prob=Decimal("0.52"),
+        )
+        assert result.recommended_size == Decimal("200")
+        assert result.capped_reason is None
+
+        # Now with tiny edge: p=0.505, P=0.50
+        # kelly = (0.505-0.50)/(0.50*0.50) = 0.005/0.25 = 0.02
+        # quarter = 0.005, raw = 50
+        # min = 100 → floored
+        result2 = sizer.calculate_binary(
+            balance=Decimal("10000"),
+            entry_price=Decimal("0.50"),
+            estimated_win_prob=Decimal("0.505"),
+        )
+        assert result2.recommended_size == Decimal("100")
+        assert "min_position_pct" in (result2.capped_reason or "")
+
+    def test_binary_book_depth_overrides_min_floor(self) -> None:
+        """Book depth cap is a hard liquidity limit that overrides min floor."""
+        sizer = PositionSizer(
+            max_position_pct=Decimal("1"),
+            min_position_pct=Decimal("0.01"),
+            max_order_book_pct=Decimal("0.10"),
+        )
+        result = sizer.calculate_binary(
+            balance=Decimal("100000"),
+            entry_price=Decimal("0.60"),
+            estimated_win_prob=Decimal("0.90"),
+            book_depth=Decimal("500"),
+        )
+        # min_by_balance = 1000, but max_by_book = 50
+        # Floor raises to 1000, then book depth overrides to 50
+        assert result.recommended_size == Decimal("50")
+        assert "max_order_book_pct" in (result.capped_reason or "")
+
+    def test_binary_default_params(self) -> None:
+        """Default params: min=1%, max=5%, quarter-Kelly."""
+        sizer = PositionSizer()
+        # p=0.93, P=0.50 -> large edge
+        # kelly = (0.93-0.50)/(0.50*0.50) = 0.43/0.25 = 1.72
+        # quarter = 0.43, raw = 4300
+        # max = 500, min = 100 → capped at 500
+        result = sizer.calculate_binary(
+            balance=Decimal("10000"),
+            entry_price=Decimal("0.50"),
+            estimated_win_prob=Decimal("0.93"),
+        )
+        assert result.recommended_size == Decimal("500")
+        assert "max_position_pct" in (result.capped_reason or "")

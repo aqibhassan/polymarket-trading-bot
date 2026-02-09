@@ -1,10 +1,14 @@
-"""Half-Kelly position sizing with safety caps.
+"""Kelly position sizing with min/max caps.
 
 Supports both general trading and binary prediction market sizing.
 For binary markets, uses the correct asymmetric Kelly for binary payoffs:
     f* = p/P - (1-p)/(1-P) = (p - P) / (P * (1 - P))
 This accounts for the asymmetric payoff structure where wagering $X at
 price P yields $X/P shares, winning $(1-P)/P per dollar risked.
+
+Position sizes are floored at min_position_pct (default 1%) and capped
+at max_position_pct (default 5%).  Kelly can push size up to the max
+when win-rate justifies it; the floor ensures we always participate.
 """
 
 from __future__ import annotations
@@ -30,10 +34,12 @@ class PositionSize(BaseModel):
 
 
 class PositionSizer:
-    """Half-Kelly position sizing with safety caps.
+    """Kelly position sizing with min/max caps.
 
-    Calculates optimal position size using the Kelly criterion at half
-    leverage, then caps at risk limits.
+    Calculates optimal position size using the Kelly criterion scaled by
+    ``kelly_multiplier``, then enforces:
+      - Floor at ``min_position_pct`` of balance (default 1%)
+      - Cap at ``max_position_pct`` of balance (default 5%)
 
     For binary prediction markets, use ``calculate_binary`` which applies
     the asymmetric Kelly formula: f* = (p - P) / (P * (1 - P)).
@@ -41,11 +47,13 @@ class PositionSizer:
 
     def __init__(
         self,
-        max_position_pct: Decimal = Decimal("0.02"),
+        max_position_pct: Decimal = Decimal("0.05"),
+        min_position_pct: Decimal = Decimal("0.01"),
         max_order_book_pct: Decimal = Decimal("0.10"),
-        kelly_multiplier: Decimal = Decimal("0.5"),
+        kelly_multiplier: Decimal = Decimal("0.25"),
     ) -> None:
         self._max_position_pct = max_position_pct
+        self._min_position_pct = min_position_pct
         self._max_order_book_pct = max_order_book_pct
         self._kelly_multiplier = kelly_multiplier
 
@@ -103,24 +111,31 @@ class PositionSizer:
         adjusted = half_kelly * Decimal(str(signal_confidence))
         raw_size = adjusted * balance
 
-        # Apply caps
+        # Apply floor then hard caps (book depth overrides floor)
         max_by_balance = balance * self._max_position_pct
+        min_by_balance = balance * self._min_position_pct
         max_by_book = book_depth * self._max_order_book_pct if book_depth > 0 else max_by_balance
         max_allowed = min(max_by_balance, max_by_book)
 
         capped_reason: str | None = None
         recommended = raw_size
-        if raw_size > max_by_balance:
+        # 1) Floor at min_position_pct (ensures we always participate)
+        if recommended < min_by_balance:
+            recommended = min_by_balance
+            capped_reason = f"floored at min_position_pct ({self._min_position_pct * 100}%)"
+        # 2) Cap at max_position_pct
+        if recommended > max_by_balance:
             recommended = max_by_balance
             capped_reason = f"capped at max_position_pct ({self._max_position_pct * 100}%)"
-        if book_depth > 0 and raw_size > max_by_book:
-            recommended = min(recommended, max_by_book)
+        # 3) Hard cap at book depth (liquidity — overrides floor)
+        if book_depth > 0 and recommended > max_by_book:
+            recommended = max_by_book
             capped_reason = f"capped at max_order_book_pct ({self._max_order_book_pct * 100}%)"
 
         log.info(
             "position_sized",
             kelly=str(kelly),
-            half_kelly=str(half_kelly),
+            frac_kelly=str(half_kelly),
             raw_size=str(raw_size),
             recommended=str(recommended),
             capped_reason=capped_reason or "none",
@@ -149,8 +164,8 @@ class PositionSizer:
         This accounts for binary market asymmetry: wagering $X at price P
         yields $X/P shares, winning $(1-P)/P per dollar risked.
 
-        Then applies ``kelly_multiplier`` (default 0.5 for half-Kelly)
-        and caps at risk limits.
+        Then applies ``kelly_multiplier`` (default 0.25 for quarter-Kelly),
+        floors at ``min_position_pct``, and caps at risk limits.
 
         Args:
             balance: Current account balance (USDC).
@@ -200,8 +215,9 @@ class PositionSizer:
 
         raw_size = frac_kelly * balance
 
-        # Apply caps
+        # Apply floor then hard caps (book depth overrides floor)
         max_by_balance = balance * self._max_position_pct
+        min_by_balance = balance * self._min_position_pct
         max_by_book = (
             book_depth * self._max_order_book_pct
             if book_depth > 0
@@ -211,13 +227,21 @@ class PositionSizer:
 
         capped_reason: str | None = None
         recommended = raw_size
-        if raw_size > max_by_balance:
+        # 1) Floor at min_position_pct (ensures we always participate)
+        if recommended < min_by_balance:
+            recommended = min_by_balance
+            capped_reason = (
+                f"floored at min_position_pct ({self._min_position_pct * 100}%)"
+            )
+        # 2) Cap at max_position_pct
+        if recommended > max_by_balance:
             recommended = max_by_balance
             capped_reason = (
                 f"capped at max_position_pct ({self._max_position_pct * 100}%)"
             )
-        if book_depth > 0 and raw_size > max_by_book:
-            recommended = min(recommended, max_by_book)
+        # 3) Hard cap at book depth (liquidity — overrides floor)
+        if book_depth > 0 and recommended > max_by_book:
+            recommended = max_by_book
             capped_reason = (
                 f"capped at max_order_book_pct ({self._max_order_book_pct * 100}%)"
             )

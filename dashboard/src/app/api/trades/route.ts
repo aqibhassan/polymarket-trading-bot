@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
     const strategy = validStrategyOrUndefined(searchParams.get('strategy'));
 
     const trades = start && end
-      ? await getTradesInRange(start, end)
+      ? await getTradesInRange(start, end, strategy)
       : await getRecentTrades(limit, strategy);
 
     return NextResponse.json({ trades });

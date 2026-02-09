@@ -1,6 +1,39 @@
 import clickhouse from '../db/clickhouse';
 import type { Trade, DailyPnl, StrategyPerformance, AuditEvent, AdvancedMetrics } from '../types/trade';
 
+// ClickHouse JSONEachRow returns ALL numeric columns as strings.
+// This helper converts known numeric fields to actual numbers so
+// downstream code can do arithmetic safely without `Number()` wrappers.
+const TRADE_NUMERIC_FIELDS = new Set([
+  'entry_price', 'exit_price', 'position_size', 'pnl', 'fee_cost',
+  'window_minute', 'cum_return_pct', 'confidence',
+]);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function coerceTradeNumerics<T>(row: T): T {
+  const out = { ...row } as any;
+  for (const key of TRADE_NUMERIC_FIELDS) {
+    if (key in out) {
+      out[key] = Number(out[key]);
+    }
+  }
+  return out as T;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function coerceRows<T>(rows: T[], numericFields?: Set<string>): T[] {
+  if (!numericFields) return rows.map(coerceTradeNumerics);
+  return rows.map(row => {
+    const out = { ...row } as any;
+    for (const key of numericFields) {
+      if (key in out) {
+        out[key] = Number(out[key]);
+      }
+    }
+    return out as T;
+  });
+}
+
 export async function getRecentTrades(limit: number = 10, strategy?: string): Promise<Trade[]> {
   const where = strategy ? `WHERE strategy = {strategy:String}` : '';
   const result = await clickhouse.query({
@@ -8,17 +41,20 @@ export async function getRecentTrades(limit: number = 10, strategy?: string): Pr
     query_params: { limit, ...(strategy ? { strategy } : {}) },
     format: 'JSONEachRow',
   });
-  return result.json<Trade>();
+  return coerceRows(await result.json<Trade>());
 }
 
-export async function getTradesInRange(start: string, end: string): Promise<Trade[]> {
+export async function getTradesInRange(start: string, end: string, strategy?: string): Promise<Trade[]> {
+  const stratWhere = strategy ? ` AND strategy = {strategy:String}` : '';
   const result = await clickhouse.query({
-    query: `SELECT * FROM mvhe.trades WHERE entry_time >= {start:String} AND entry_time <= {end:String} ORDER BY entry_time DESC`,
-    query_params: { start, end },
+    query: `SELECT * FROM mvhe.trades WHERE entry_time >= {start:String} AND entry_time <= {end:String}${stratWhere} ORDER BY entry_time DESC`,
+    query_params: { start, end, ...(strategy ? { strategy } : {}) },
     format: 'JSONEachRow',
   });
-  return result.json<Trade>();
+  return coerceRows(await result.json<Trade>());
 }
+
+const DAILY_NUMERIC = new Set(['trade_count', 'total_pnl', 'total_fees', 'win_count']);
 
 export async function getDailyPnl(date: string): Promise<DailyPnl[]> {
   const result = await clickhouse.query({
@@ -36,8 +72,13 @@ export async function getDailyPnl(date: string): Promise<DailyPnl[]> {
     query_params: { date },
     format: 'JSONEachRow',
   });
-  return result.json<DailyPnl>();
+  return coerceRows(await result.json<DailyPnl>(), DAILY_NUMERIC);
 }
+
+const PERF_NUMERIC = new Set([
+  'trade_count', 'win_count', 'total_pnl', 'total_fees', 'avg_pnl',
+  'best_trade', 'worst_trade', 'avg_position_size', 'avg_confidence',
+]);
 
 export async function getStrategyPerformance(strategy: string): Promise<StrategyPerformance | null> {
   const result = await clickhouse.query({
@@ -60,9 +101,11 @@ export async function getStrategyPerformance(strategy: string): Promise<Strategy
     query_params: { strategy },
     format: 'JSONEachRow',
   });
-  const rows = await result.json<StrategyPerformance>();
+  const rows = coerceRows(await result.json<StrategyPerformance>(), PERF_NUMERIC);
   return rows.length > 0 ? rows[0] : null;
 }
+
+const EQ_NUMERIC = new Set(['cumulative_pnl']);
 
 export async function getEquityCurve(strategy?: string): Promise<Array<{ time: string; cumulative_pnl: number }>> {
   const where = strategy ? `WHERE strategy = {strategy:String}` : '';
@@ -78,10 +121,11 @@ export async function getEquityCurve(strategy?: string): Promise<Array<{ time: s
     query_params: strategy ? { strategy } : {},
     format: 'JSONEachRow',
   });
-  return result.json<{ time: string; cumulative_pnl: number }>();
+  return coerceRows(await result.json<{ time: string; cumulative_pnl: number }>(), EQ_NUMERIC);
 }
 
 export async function getAdvancedMetrics(strategy: string): Promise<AdvancedMetrics | null> {
+  // Sortino uses target=0 (not mean) — downside_dev is sqrt of mean squared negative PnL
   const result = await clickhouse.query({
     query: `
       SELECT
@@ -90,50 +134,55 @@ export async function getAdvancedMetrics(strategy: string): Promise<AdvancedMetr
         abs(sumIf(pnl, pnl < 0)) AS gross_loss,
         avg(pnl) AS avg_pnl,
         stddevPop(pnl) AS pnl_stddev,
-        sqrt(sumIf(pow(pnl - avg_pnl_sub.m, 2), pnl < avg_pnl_sub.m) / greatest(countIf(pnl < avg_pnl_sub.m), 1)) AS downside_dev,
+        sqrt(sumIf(pow(pnl, 2), pnl < 0) / greatest(countIf(pnl < 0), 1)) AS downside_dev,
         avg(dateDiff('minute', entry_time, exit_time)) AS avg_hold_time_minutes,
         countIf(pnl > 0) AS win_count,
         min(toDate(entry_time)) AS first_date,
         max(toDate(entry_time)) AS last_date
       FROM mvhe.trades
-      CROSS JOIN (SELECT avg(pnl) AS m FROM mvhe.trades WHERE strategy = {strategy:String}) AS avg_pnl_sub
       WHERE strategy = {strategy:String}
     `,
     query_params: { strategy },
     format: 'JSONEachRow',
   });
   type RawRow = {
-    total_trades: number;
-    gross_profit: number;
-    gross_loss: number;
-    avg_pnl: number;
-    pnl_stddev: number;
-    downside_dev: number;
-    avg_hold_time_minutes: number;
-    win_count: number;
+    total_trades: string;
+    gross_profit: string;
+    gross_loss: string;
+    avg_pnl: string;
+    pnl_stddev: string;
+    downside_dev: string;
+    avg_hold_time_minutes: string;
+    win_count: string;
     first_date: string;
     last_date: string;
   };
   const rows = await result.json<RawRow>();
-  if (rows.length === 0 || rows[0].total_trades === 0) return null;
+  if (rows.length === 0 || Number(rows[0].total_trades) === 0) return null;
   const r = rows[0];
 
-  const profitFactor = Number(r.gross_loss) > 0 ? Number(r.gross_profit) / Number(r.gross_loss) : Number(r.gross_profit) > 0 ? Infinity : 0;
+  const grossProfit = Number(r.gross_profit);
+  const grossLoss = Number(r.gross_loss);
+  const avgPnl = Number(r.avg_pnl);
+  const totalTrades = Number(r.total_trades);
+  const winCount = Number(r.win_count);
+
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
   const stddev = Number(r.pnl_stddev);
-  const sharpe = stddev > 0 ? Number(r.avg_pnl) / stddev : 0;
+  const sharpe = stddev > 0 ? avgPnl / stddev : 0;
   const downsideDev = Number(r.downside_dev);
-  const sortino = downsideDev > 0 ? Number(r.avg_pnl) / downsideDev : 0;
-  const winRate = Number(r.win_count) / Number(r.total_trades);
-  const avgWin = Number(r.win_count) > 0 ? Number(r.gross_profit) / Number(r.win_count) : 0;
-  const lossCount = Number(r.total_trades) - Number(r.win_count);
-  const avgLoss = lossCount > 0 ? Number(r.gross_loss) / lossCount : 0;
+  const sortino = downsideDev > 0 ? avgPnl / downsideDev : 0;
+  const winRate = totalTrades > 0 ? winCount / totalTrades : 0;
+  const avgWin = winCount > 0 ? grossProfit / winCount : 0;
+  const lossCount = totalTrades - winCount;
+  const avgLoss = lossCount > 0 ? grossLoss / lossCount : 0;
   const expectancy = winRate * avgWin - (1 - winRate) * avgLoss;
 
   // Days span for avg trades per day
   const firstDate = new Date(r.first_date);
   const lastDate = new Date(r.last_date);
   const daySpan = Math.max(1, Math.ceil((lastDate.getTime() - firstDate.getTime()) / 86400000) + 1);
-  const avgTradesPerDay = Number(r.total_trades) / daySpan;
+  const avgTradesPerDay = totalTrades / daySpan;
 
   // Max drawdown via equity curve
   const eqResult = await clickhouse.query({
@@ -146,13 +195,13 @@ export async function getAdvancedMetrics(strategy: string): Promise<AdvancedMetr
     query_params: { strategy },
     format: 'JSONEachRow',
   });
-  const eqRows = await eqResult.json<{ cumulative_pnl: number }>();
+  const eqRows = coerceRows(await eqResult.json<{ cumulative_pnl: number }>(), EQ_NUMERIC);
   // Use equity (initial_balance + cumulative_pnl) to compute drawdown percentage
   const initialBalance = 10000;
   let peakEquity = initialBalance;
   let maxDrawdown = 0;
   for (const row of eqRows) {
-    const equity = initialBalance + Number(row.cumulative_pnl);
+    const equity = initialBalance + row.cumulative_pnl;
     if (equity > peakEquity) peakEquity = equity;
     const dd = peakEquity > 0 ? (peakEquity - equity) / peakEquity : 0;
     if (dd > maxDrawdown) maxDrawdown = dd;
@@ -163,9 +212,9 @@ export async function getAdvancedMetrics(strategy: string): Promise<AdvancedMetr
     sharpe_ratio: Number(sharpe.toFixed(2)),
     sortino_ratio: Number(sortino.toFixed(2)),
     max_drawdown_pct: Number((maxDrawdown * 100).toFixed(2)),
-    avg_hold_time_minutes: Number(Number(r.avg_hold_time_minutes).toFixed(1)),
+    avg_hold_time_minutes: Number(Number(r.avg_hold_time_minutes || 0).toFixed(1)),
     expectancy: Number(expectancy.toFixed(4)),
-    total_trades: Number(r.total_trades),
+    total_trades: totalTrades,
     avg_trades_per_day: Number(avgTradesPerDay.toFixed(1)),
   };
 }
@@ -176,7 +225,7 @@ export async function getTradesWithSignals(strategy: string): Promise<Array<Trad
     query_params: { strategy },
     format: 'JSONEachRow',
   });
-  return result.json<Trade & { signal_details: string }>();
+  return coerceRows(await result.json<Trade & { signal_details: string }>());
 }
 
 export async function getAuditEvents(limit: number = 50): Promise<AuditEvent[]> {

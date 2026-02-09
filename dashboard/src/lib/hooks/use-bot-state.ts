@@ -22,11 +22,18 @@ export function useBotState() {
   useEffect(() => {
     let es: EventSource | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
+    let disposed = false;
 
     const connect = () => {
+      if (disposed) return;
+      // Clear any pending reconnect to prevent connection multiplication
+      clearTimeout(reconnectTimeout);
+
       es = new EventSource('/api/sse');
 
-      es.onopen = () => setConnected(true);
+      es.onopen = () => {
+        if (!disposed) setConnected(true);
+      };
 
       es.onmessage = (event) => {
         try {
@@ -38,8 +45,11 @@ export function useBotState() {
       };
 
       es.onerror = () => {
+        if (disposed) return;
         setConnected(false);
         es?.close();
+        es = null;
+        // Single reconnect — cleared at top of connect() if called again
         reconnectTimeout = setTimeout(connect, 3000);
       };
     };
@@ -47,7 +57,9 @@ export function useBotState() {
     connect();
 
     return () => {
+      disposed = true;
       es?.close();
+      es = null;
       clearTimeout(reconnectTimeout);
     };
   }, []);

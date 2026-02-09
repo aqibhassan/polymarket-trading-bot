@@ -361,7 +361,10 @@ class BotOrchestrator:
 
         # --- Config ---
         max_position_pct = Decimal(
-            str(self._config.get("risk.max_position_pct", 0.02))
+            str(self._config.get("risk.max_position_pct", 0.05))
+        )
+        min_position_pct = Decimal(
+            str(self._config.get("risk.min_position_pct", 0.01))
         )
         max_daily_drawdown_pct = Decimal(
             str(self._config.get("risk.max_daily_drawdown_pct", 0.05))
@@ -399,6 +402,10 @@ class BotOrchestrator:
         scanner = PolymarketScanner()
         cache = RedisCache()
         redis_conn = await cache._get_redis()
+        # Clear stale bot state keys from prior run so dashboard
+        # never shows outdated data before fresh publishes arrive.
+        for key in await redis_conn.keys("mvhe:bot:*"):
+            await redis_conn.delete(key)
         kill_switch = KillSwitch(
             max_daily_drawdown_pct, redis_client=redis_conn, async_redis=True,
         )
@@ -410,6 +417,7 @@ class BotOrchestrator:
         )
         position_sizer = PositionSizer(
             max_position_pct=max_position_pct,
+            min_position_pct=min_position_pct,
             kelly_multiplier=kelly_multiplier,
         )
         cost_calculator = CostCalculator()
