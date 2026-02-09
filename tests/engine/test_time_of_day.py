@@ -22,39 +22,39 @@ class TestTimeOfDayAnalyzer:
 
     def test_peak_hour_returns_highest_multiplier(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
-        adj = analyzer.get_adjustment(14)
-        assert adj.position_size_multiplier == 1.25
-        assert adj.estimated_win_rate == 0.93
+        adj = analyzer.get_adjustment(7)
+        assert adj.position_size_multiplier == 1.10
+        assert adj.estimated_win_rate == 0.86
 
     def test_off_peak_hour_returns_lowest_multiplier(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
         adj = analyzer.get_adjustment(1)
-        assert adj.position_size_multiplier == 0.68
-        assert adj.estimated_win_rate == 0.78
+        assert adj.position_size_multiplier == 0.95
+        assert adj.estimated_win_rate == 0.83
 
-    def test_optimal_window_hours_12_to_17(self, mock_config: MagicMock) -> None:
+    def test_optimal_window_hours_7_to_11(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
-        for hour in range(12, 18):
+        for hour in [7, 8, 9, 10, 11]:
             assert analyzer.is_optimal_window(hour) is True, f"Hour {hour} should be optimal"
 
-    def test_non_optimal_window_hours_0_to_8(self, mock_config: MagicMock) -> None:
+    def test_non_optimal_window_off_peak(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
-        for hour in range(0, 9):
+        for hour in [0, 1, 2, 3, 4, 19, 20, 21, 22, 23]:
             assert analyzer.is_optimal_window(hour) is False, f"Hour {hour} should not be optimal"
 
     def test_edge_case_hour_0(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
         adj = analyzer.get_adjustment(0)
         assert adj.hour == 0
-        assert adj.position_size_multiplier == 0.70
-        assert adj.min_confidence_adjustment == 0.03
+        assert adj.position_size_multiplier == 0.95
+        assert adj.min_confidence_adjustment == 0.01
 
     def test_edge_case_hour_23(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
         adj = analyzer.get_adjustment(23)
         assert adj.hour == 23
-        assert adj.position_size_multiplier == 0.72
-        assert adj.min_confidence_adjustment == 0.02
+        assert adj.position_size_multiplier == 0.95
+        assert adj.min_confidence_adjustment == 0.01
 
     def test_all_24_hours_return_valid_results(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
@@ -102,10 +102,19 @@ class TestTimeOfDayAnalyzer:
 
     def test_peak_has_negative_confidence_adjustment(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
-        adj = analyzer.get_adjustment(14)
+        adj = analyzer.get_adjustment(7)  # Peak hour for singularity
         assert adj.min_confidence_adjustment < 0.0
 
     def test_off_peak_has_positive_confidence_adjustment(self, mock_config: MagicMock) -> None:
         analyzer = TimeOfDayAnalyzer(mock_config)
         adj = analyzer.get_adjustment(0)
         assert adj.min_confidence_adjustment > 0.0
+
+    def test_singularity_flat_profile(self, mock_config: MagicMock) -> None:
+        """Singularity has a flat hourly profile — all multipliers within 0.95-1.10."""
+        analyzer = TimeOfDayAnalyzer(mock_config)
+        for hour in range(24):
+            adj = analyzer.get_adjustment(hour)
+            assert 0.95 <= adj.position_size_multiplier <= 1.10, (
+                f"Hour {hour}: mult {adj.position_size_multiplier} outside [0.95, 1.10]"
+            )

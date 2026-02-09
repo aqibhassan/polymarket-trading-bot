@@ -25,33 +25,34 @@ class TimeOfDayAdjustment(BaseModel):
     model_config = {"frozen": True}
 
 
-# Default hour statistics from backtest research
-# Key insight: 14:00-16:00 UTC (US market open) has highest accuracy
+# Default hour statistics from singularity backtest (Feb 2026, 64k trades)
+# Singularity has a flat hourly profile (~83-86%) with mild peaks at 07/09 UTC.
+# size_mult normalised so average hour ~1.0, best hours ~1.10.
 _DEFAULT_HOUR_STATS: dict[int, dict[str, float]] = {
-    0:  {"win_rate": 0.79, "size_mult": 0.70, "conf_adj": 0.03},
-    1:  {"win_rate": 0.78, "size_mult": 0.68, "conf_adj": 0.03},
-    2:  {"win_rate": 0.78, "size_mult": 0.68, "conf_adj": 0.03},
-    3:  {"win_rate": 0.79, "size_mult": 0.70, "conf_adj": 0.03},
-    4:  {"win_rate": 0.80, "size_mult": 0.72, "conf_adj": 0.02},
-    5:  {"win_rate": 0.80, "size_mult": 0.72, "conf_adj": 0.02},
-    6:  {"win_rate": 0.81, "size_mult": 0.75, "conf_adj": 0.02},
-    7:  {"win_rate": 0.82, "size_mult": 0.78, "conf_adj": 0.02},
-    8:  {"win_rate": 0.83, "size_mult": 0.80, "conf_adj": 0.01},
-    9:  {"win_rate": 0.84, "size_mult": 0.85, "conf_adj": 0.01},
-    10: {"win_rate": 0.86, "size_mult": 0.90, "conf_adj": 0.00},
-    11: {"win_rate": 0.87, "size_mult": 0.95, "conf_adj": 0.00},
-    12: {"win_rate": 0.89, "size_mult": 1.00, "conf_adj": -0.02},
-    13: {"win_rate": 0.91, "size_mult": 1.10, "conf_adj": -0.03},
-    14: {"win_rate": 0.93, "size_mult": 1.25, "conf_adj": -0.05},
-    15: {"win_rate": 0.92, "size_mult": 1.20, "conf_adj": -0.04},
-    16: {"win_rate": 0.88, "size_mult": 1.05, "conf_adj": -0.02},
-    17: {"win_rate": 0.87, "size_mult": 1.00, "conf_adj": -0.01},
-    18: {"win_rate": 0.86, "size_mult": 0.95, "conf_adj": 0.00},
-    19: {"win_rate": 0.85, "size_mult": 0.90, "conf_adj": 0.00},
-    20: {"win_rate": 0.84, "size_mult": 0.85, "conf_adj": 0.01},
-    21: {"win_rate": 0.83, "size_mult": 0.80, "conf_adj": 0.01},
-    22: {"win_rate": 0.81, "size_mult": 0.75, "conf_adj": 0.02},
-    23: {"win_rate": 0.80, "size_mult": 0.72, "conf_adj": 0.02},
+    0:  {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    1:  {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    2:  {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    3:  {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    4:  {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    5:  {"win_rate": 0.84, "size_mult": 0.98, "conf_adj": 0.00},
+    6:  {"win_rate": 0.84, "size_mult": 0.98, "conf_adj": 0.00},
+    7:  {"win_rate": 0.86, "size_mult": 1.10, "conf_adj": -0.01},
+    8:  {"win_rate": 0.85, "size_mult": 1.05, "conf_adj": -0.01},
+    9:  {"win_rate": 0.86, "size_mult": 1.10, "conf_adj": -0.01},
+    10: {"win_rate": 0.85, "size_mult": 1.05, "conf_adj": 0.00},
+    11: {"win_rate": 0.85, "size_mult": 1.05, "conf_adj": 0.00},
+    12: {"win_rate": 0.84, "size_mult": 1.00, "conf_adj": 0.00},
+    13: {"win_rate": 0.84, "size_mult": 1.00, "conf_adj": 0.00},
+    14: {"win_rate": 0.84, "size_mult": 1.00, "conf_adj": 0.00},
+    15: {"win_rate": 0.84, "size_mult": 1.00, "conf_adj": 0.00},
+    16: {"win_rate": 0.84, "size_mult": 1.00, "conf_adj": 0.00},
+    17: {"win_rate": 0.84, "size_mult": 0.98, "conf_adj": 0.00},
+    18: {"win_rate": 0.84, "size_mult": 0.98, "conf_adj": 0.00},
+    19: {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    20: {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    21: {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    22: {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
+    23: {"win_rate": 0.83, "size_mult": 0.95, "conf_adj": 0.01},
 }
 
 
