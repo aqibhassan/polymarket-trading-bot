@@ -29,6 +29,14 @@ function ConnectionIndicator({ label, connected }: { label: string; connected: b
   );
 }
 
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
 export default function HealthPage() {
   const { state } = useBotState();
   const [health, setHealth] = useState<HealthStatus | null>(null);
@@ -81,7 +89,7 @@ export default function HealthPage() {
         />
       </div>
 
-      {/* Bot Heartbeat */}
+      {/* Bot Status */}
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium text-zinc-400">Bot Status</CardTitle>
@@ -112,6 +120,55 @@ export default function HealthPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Uptime & Idle Time */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Uptime</p>
+            <p className="mt-2 text-2xl font-bold text-zinc-50">
+              {health?.uptime_s != null ? formatDuration(health.uptime_s) : '--'}
+            </p>
+            <p className="text-xs text-zinc-500 mt-1">Since bot started</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Idle Time</p>
+            <p className={`mt-2 text-2xl font-bold ${
+              health?.has_open_position
+                ? 'text-emerald-400'
+                : health?.idle_since_s != null && health.idle_since_s > 1800
+                  ? 'text-amber-400'
+                  : 'text-zinc-50'
+            }`}>
+              {health?.has_open_position
+                ? 'In Trade'
+                : health?.idle_since_s != null
+                  ? formatDuration(health.idle_since_s)
+                  : '--'}
+            </p>
+            <p className="text-xs text-zinc-500 mt-1">
+              {health?.last_trade_time
+                ? `Last trade: ${new Date(health.last_trade_time).toLocaleTimeString()}`
+                : 'No trades yet'}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Position</p>
+            <p className={`mt-2 text-2xl font-bold ${health?.has_open_position ? 'text-emerald-400' : 'text-zinc-500'}`}>
+              {health?.has_open_position ? 'Open' : 'None'}
+            </p>
+            <p className="text-xs text-zinc-500 mt-1">
+              {state.position
+                ? `${state.position.side} @ ${Number(state.position.entry_price).toFixed(4)}`
+                : 'Waiting for signal'}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Audit Events */}
       <Card>

@@ -93,6 +93,10 @@ export interface BotState {
 export interface HealthStatus {
   bot_alive: boolean;
   heartbeat_age_s: number | null;
+  uptime_s: number | null;
+  idle_since_s: number | null;
+  last_trade_time: string | null;
+  has_open_position: boolean;
   redis: boolean;
   clickhouse: boolean;
   timescaledb: boolean;
