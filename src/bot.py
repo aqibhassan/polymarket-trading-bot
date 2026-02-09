@@ -469,6 +469,7 @@ class BotOrchestrator:
             initial_balance=str(initial_balance),
             kelly_multiplier=str(kelly_multiplier),
             max_position_pct=str(max_position_pct),
+            min_position_pct=str(min_position_pct),
         )
 
         try:

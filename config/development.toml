@@ -1,6 +1,7 @@
 [risk]
-max_position_pct = 0.01
-max_daily_drawdown_pct = 0.02
+max_position_pct = 0.05
+min_position_pct = 0.01
+max_daily_drawdown_pct = 0.05
 
 [binance]
 ws_url = "wss://testnet.binance.vision/ws/btcusdt@kline_15m"
