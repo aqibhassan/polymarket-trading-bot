@@ -142,7 +142,7 @@ export default function PerformancePage() {
                   <YAxis stroke="#71717a" fontSize={11} tickFormatter={(v: number) => `${v}%`} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px' }}
-                    formatter={(v: number, _: string, props: { payload: { total: number } }) => [`${v}% (${props.payload.total} trades)`, 'Win Rate']}
+                    formatter={(v: number, _: string, props: { payload?: { total: number } }) => [`${v}% (${props.payload?.total ?? 0} trades)`, 'Win Rate']}
                   />
                   <Bar dataKey="win_rate" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                 </BarChart>
