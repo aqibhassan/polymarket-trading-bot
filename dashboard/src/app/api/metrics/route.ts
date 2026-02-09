@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getAdvancedMetrics } from '@/lib/queries/trades';
+import { validStrategy } from '@/lib/validation';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const strategy = searchParams.get('strategy') || 'momentum_confirmation';
+  const strategy = validStrategy(searchParams.get('strategy'));
 
   try {
     const metrics = await getAdvancedMetrics(strategy);

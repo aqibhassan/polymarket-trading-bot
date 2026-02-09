@@ -97,7 +97,7 @@ class CostCalculator:
         )
 
     @staticmethod
-    def polymarket_fee(position_size: Decimal, entry_price: Decimal) -> Decimal:
+    def polymarket_fee(notional_usdc: Decimal, entry_price: Decimal) -> Decimal:
         """Calculate Polymarket dynamic taker fee for 15-min crypto markets.
 
         The fee curve peaks at 1.56% at 50/50 odds and drops toward zero
@@ -107,7 +107,7 @@ class CostCalculator:
             fee = N * 0.25 * P^2 * (1 - P)^2
 
         Args:
-            position_size: Dollar amount of the trade.
+            notional_usdc: USDC notional amount of the trade (shares * price).
             entry_price: Contract price (0 < P < 1).
 
         Returns:
@@ -115,7 +115,7 @@ class CostCalculator:
         """
         if entry_price <= 0 or entry_price >= 1:
             return Decimal("0")
-        return position_size * POLY_FEE_K * entry_price ** 2 * (1 - entry_price) ** 2
+        return notional_usdc * POLY_FEE_K * entry_price ** 2 * (1 - entry_price) ** 2
 
     def calculate_binary(
         self,

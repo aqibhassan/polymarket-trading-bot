@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import { getTradesWithSignals } from '@/lib/queries/trades';
+import { validStrategy } from '@/lib/validation';
 import type { SignalComboWinRate } from '@/lib/types/trade';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const strategy = searchParams.get('strategy') || 'momentum_confirmation';
+  const strategy = validStrategy(searchParams.get('strategy'));
 
   try {
     const trades = await getTradesWithSignals(strategy);

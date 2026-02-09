@@ -868,10 +868,12 @@ class BotOrchestrator:
                             )
 
                         # Risk gate (include fees in size check)
+                        # position_size is SHARES; check_order expects USDC notional
+                        notional_usdc = position_size * entry_price
                         current_drawdown = portfolio.max_drawdown
                         decision = risk_mgr.check_order(
                             signal=sig,
-                            position_size=position_size,
+                            position_size=notional_usdc,
                             current_drawdown=current_drawdown,
                             balance=paper_trader.balance,
                             estimated_fee=costs.fee_cost,
