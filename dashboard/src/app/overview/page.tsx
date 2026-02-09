@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useBotState } from '@/lib/hooks/use-bot-state';
 import { useTrades } from '@/lib/hooks/use-trades';
 import { StatCard } from '@/components/charts/stat-card';
@@ -14,49 +14,84 @@ import { TradesTable } from '@/components/charts/trades-table';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DollarSign, TrendingUp, Trophy, BarChart3 } from 'lucide-react';
+import type { DailyPnl } from '@/lib/types/trade';
+
+const INITIAL_BALANCE = 10000;
 
 export default function OverviewPage() {
   const { state, connected } = useBotState();
   const { trades } = useTrades(10, 15000);
   const [equityData, setEquityData] = useState<Array<{ time: string; cumulative_pnl: number }>>([]);
   const [killSwitch, setKillSwitch] = useState(false);
+  // ClickHouse fallback for daily stats when Redis is empty/stale
+  const [chDaily, setChDaily] = useState<DailyPnl | null>(null);
+  const [chTotalPnl, setChTotalPnl] = useState<number>(0);
+
+  const fetchClickhouseFallback = useCallback(async () => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const res = await fetch(`/api/daily-pnl?date=${today}`);
+      const data = await res.json();
+      const rows: DailyPnl[] = data.data || [];
+      if (rows.length > 0) {
+        // Sum across strategies for totals
+        const combined: DailyPnl = {
+          strategy: 'all',
+          trade_count: rows.reduce((s, r) => s + Number(r.trade_count), 0),
+          total_pnl: rows.reduce((s, r) => s + Number(r.total_pnl), 0),
+          total_fees: rows.reduce((s, r) => s + Number(r.total_fees), 0),
+          win_count: rows.reduce((s, r) => s + Number(r.win_count), 0),
+        };
+        setChDaily(combined);
+      }
+    } catch { /* ignore */ }
+
+    try {
+      const eqRes = await fetch('/api/equity-curve');
+      const eqData = await eqRes.json();
+      const curve = eqData.data || [];
+      setEquityData(curve);
+      if (curve.length > 0) {
+        setChTotalPnl(Number(curve[curve.length - 1].cumulative_pnl));
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
-    const fetchEquity = async () => {
-      try {
-        const res = await fetch('/api/equity-curve');
-        const data = await res.json();
-        setEquityData(data.data || []);
-      } catch { /* failed to fetch equity curve */ }
-    };
-
     const fetchKillSwitch = async () => {
       try {
         const res = await fetch('/api/kill-switch');
         const data = await res.json();
         setKillSwitch(data.active || false);
-      } catch { /* failed to fetch kill switch */ }
+      } catch { /* ignore */ }
     };
 
-    fetchEquity();
+    fetchClickhouseFallback();
     fetchKillSwitch();
     const interval = setInterval(() => {
-      fetchEquity();
+      fetchClickhouseFallback();
       fetchKillSwitch();
     }, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchClickhouseFallback]);
 
+  // Use Redis daily if it has data, otherwise fall back to ClickHouse
+  const redisDaily = state.daily;
+  const hasRedisDaily = redisDaily && redisDaily.trade_count > 0;
+
+  const dailyPnl = hasRedisDaily ? Number(redisDaily.daily_pnl) : (chDaily?.total_pnl ?? 0);
+  const tradeCount = hasRedisDaily ? redisDaily.trade_count : (chDaily?.trade_count ?? 0);
+  const winCount = hasRedisDaily ? redisDaily.win_count : (chDaily?.win_count ?? 0);
+  const lossCount = hasRedisDaily ? redisDaily.loss_count : (tradeCount - winCount);
+  const winRate = tradeCount > 0 ? ((winCount / tradeCount) * 100).toFixed(1) : '—';
+
+  // Balance: prefer Redis, fall back to initial + ClickHouse total PnL
   const balance = state.balance;
-  const daily = state.daily;
+  const displayBalance = balance ? Number(balance.balance) : INITIAL_BALANCE + chTotalPnl;
+  const displayPnl = balance ? Number(balance.pnl) : chTotalPnl;
+  const displayPnlPct = balance ? balance.pnl_pct : (chTotalPnl / INITIAL_BALANCE) * 100;
 
-  const winRate = daily && daily.trade_count > 0
-    ? ((daily.win_count / daily.trade_count) * 100).toFixed(1)
-    : '—';
-
-  const pnlTrend = balance
-    ? Number(balance.pnl) >= 0 ? 'up' as const : 'down' as const
-    : 'neutral' as const;
+  const pnlTrend = displayPnl >= 0 ? 'up' as const : 'down' as const;
 
   return (
     <div className="space-y-6">
@@ -79,26 +114,26 @@ export default function OverviewPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           title="Balance"
-          value={balance ? `$${Number(balance.balance).toFixed(2)}` : '—'}
+          value={`$${displayBalance.toFixed(2)}`}
           trend={pnlTrend}
-          trendValue={balance ? `${balance.pnl_pct >= 0 ? '+' : ''}${balance.pnl_pct.toFixed(2)}%` : undefined}
+          trendValue={`${displayPnlPct >= 0 ? '+' : ''}${displayPnlPct.toFixed(2)}%`}
           icon={<DollarSign className="h-4 w-4" />}
         />
         <StatCard
           title="Daily P&L"
-          value={daily ? `$${Number(daily.daily_pnl).toFixed(2)}` : '—'}
-          trend={daily ? (Number(daily.daily_pnl) >= 0 ? 'up' : 'down') : 'neutral'}
+          value={`$${dailyPnl.toFixed(2)}`}
+          trend={dailyPnl >= 0 ? 'up' : 'down'}
           icon={<TrendingUp className="h-4 w-4" />}
         />
         <StatCard
           title="Win Rate"
           value={winRate !== '—' ? `${winRate}%` : '—'}
-          subtitle={daily ? `${daily.win_count}W / ${daily.loss_count}L` : undefined}
+          subtitle={`${winCount}W / ${lossCount}L`}
           icon={<Trophy className="h-4 w-4" />}
         />
         <StatCard
           title="Trades Today"
-          value={daily?.trade_count ?? 0}
+          value={tradeCount}
           icon={<BarChart3 className="h-4 w-4" />}
         />
       </div>
