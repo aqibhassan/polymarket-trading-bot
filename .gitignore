@@ -41,6 +41,7 @@ rust-backtest/target/
 dashboard/node_modules/
 dashboard/dist/
 dashboard/.next/
+*.tsbuildinfo
 
 # Docker
 docker-compose.override.yml
