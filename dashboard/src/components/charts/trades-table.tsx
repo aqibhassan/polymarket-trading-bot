@@ -16,8 +16,16 @@ interface TradesTableProps {
   trades: Trade[];
 }
 
+/** Safe Number conversion — returns 0 for null/undefined/NaN */
+function safeNum(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function formatTime(iso: string): string {
+  if (!iso) return '--';
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return '--';
   const now = Date.now();
   const diff = Math.floor((now - d.getTime()) / 1000);
   if (diff < 60) return `${diff}s ago`;
@@ -49,38 +57,41 @@ export function TradesTable({ trades }: TradesTableProps) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {trades.map((trade) => (
-          <TableRow key={trade.trade_id}>
-            <TableCell className="font-mono text-xs text-zinc-400">
-              {formatTime(trade.entry_time)}
-            </TableCell>
-            <TableCell>
-              <Badge variant={trade.direction === 'YES' ? 'success' : 'destructive'}>
-                {trade.direction}
-              </Badge>
-            </TableCell>
-            <TableCell className="text-right font-mono">
-              ${Number(trade.entry_price).toFixed(4)}
-            </TableCell>
-            <TableCell className="text-right font-mono">
-              ${Number(trade.exit_price).toFixed(4)}
-            </TableCell>
-            <TableCell className="text-right font-mono">
-              ${Number(trade.position_size).toFixed(2)}
-            </TableCell>
-            <TableCell
-              className={cn(
-                'text-right font-mono font-semibold',
-                Number(trade.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400',
-              )}
-            >
-              {Number(trade.pnl) >= 0 ? '+' : ''}${Number(trade.pnl).toFixed(2)}
-            </TableCell>
-            <TableCell>
-              <Badge variant="secondary">{trade.exit_reason}</Badge>
-            </TableCell>
-          </TableRow>
-        ))}
+        {trades.map((trade) => {
+          const pnl = safeNum(trade.pnl);
+          return (
+            <TableRow key={trade.trade_id}>
+              <TableCell className="font-mono text-xs text-zinc-400">
+                {formatTime(trade.entry_time)}
+              </TableCell>
+              <TableCell>
+                <Badge variant={trade.direction === 'YES' ? 'success' : 'destructive'}>
+                  {trade.direction}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-right font-mono">
+                ${safeNum(trade.entry_price).toFixed(4)}
+              </TableCell>
+              <TableCell className="text-right font-mono">
+                ${safeNum(trade.exit_price).toFixed(4)}
+              </TableCell>
+              <TableCell className="text-right font-mono">
+                ${safeNum(trade.position_size).toFixed(2)}
+              </TableCell>
+              <TableCell
+                className={cn(
+                  'text-right font-mono font-semibold',
+                  pnl >= 0 ? 'text-emerald-400' : 'text-red-400',
+                )}
+              >
+                {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+              </TableCell>
+              <TableCell>
+                <Badge variant="secondary">{trade.exit_reason || '--'}</Badge>
+              </TableCell>
+            </TableRow>
+          );
+        })}
       </TableBody>
     </Table>
   );

@@ -1,16 +1,31 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getAllBotState } from '@/lib/queries/bot-state';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const encoder = new TextEncoder();
+  const { signal } = request;
 
   const stream = new ReadableStream({
     async start(controller) {
+      let closed = false;
+
+      const cleanup = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(interval);
+        clearTimeout(autoClose);
+        try { controller.close(); } catch { /* already closed */ }
+      };
+
+      // Clean up on client disconnect
+      signal.addEventListener('abort', cleanup);
+
       const send = (data: unknown) => {
+        if (closed) return;
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
         } catch {
-          // Controller may be closed
+          cleanup();
         }
       };
 
@@ -22,6 +37,7 @@ export async function GET() {
 
       // Poll every 2 seconds
       const interval = setInterval(async () => {
+        if (closed) return;
         try {
           const state = await getAllBotState();
           send({ type: 'bot-state', data: state });
@@ -31,12 +47,7 @@ export async function GET() {
       }, 2000);
 
       // Auto-close after 5 minutes to prevent stale connections
-      setTimeout(() => {
-        clearInterval(interval);
-        try {
-          controller.close();
-        } catch { /* already closed */ }
-      }, 5 * 60 * 1000);
+      const autoClose = setTimeout(cleanup, 5 * 60 * 1000);
     },
   });
 

@@ -8,7 +8,7 @@ interface WindowProgressProps {
   entryZoneEnd?: number;
 }
 
-export function WindowProgress({ minute, entryZoneStart = 8, entryZoneEnd = 10 }: WindowProgressProps) {
+export function WindowProgress({ minute, entryZoneStart = 8, entryZoneEnd = 12 }: WindowProgressProps) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm">

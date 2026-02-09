@@ -20,7 +20,7 @@ const INITIAL_BALANCE = 10000;
 
 export default function OverviewPage() {
   const { state, connected } = useBotState();
-  const { trades } = useTrades(10, 15000);
+  const { trades } = useTrades(10, 10000);
   const [equityData, setEquityData] = useState<Array<{ time: string; cumulative_pnl: number }>>([]);
   const [killSwitch, setKillSwitch] = useState(false);
   // ClickHouse fallback for daily stats when Redis is empty/stale
@@ -71,25 +71,23 @@ export default function OverviewPage() {
     const interval = setInterval(() => {
       fetchClickhouseFallback();
       fetchKillSwitch();
-    }, 30000);
+    }, 10000);
     return () => clearInterval(interval);
   }, [fetchClickhouseFallback]);
 
-  // Use Redis daily if it has data, otherwise fall back to ClickHouse
-  const redisDaily = state.daily;
-  const hasRedisDaily = redisDaily && redisDaily.trade_count > 0;
-
-  const dailyPnl = hasRedisDaily ? Number(redisDaily.daily_pnl) : (chDaily?.total_pnl ?? 0);
-  const tradeCount = hasRedisDaily ? redisDaily.trade_count : (chDaily?.trade_count ?? 0);
-  const winCount = hasRedisDaily ? redisDaily.win_count : (chDaily?.win_count ?? 0);
-  const lossCount = hasRedisDaily ? redisDaily.loss_count : (tradeCount - winCount);
+  // Always use ClickHouse for daily stats — Redis counters reset on bot restart
+  // and may undercount trades. ClickHouse has the full picture.
+  const dailyPnl = chDaily?.total_pnl ?? 0;
+  const tradeCount = chDaily?.trade_count ?? 0;
+  const winCount = chDaily?.win_count ?? 0;
+  const lossCount = tradeCount - winCount;
   const winRate = tradeCount > 0 ? ((winCount / tradeCount) * 100).toFixed(1) : '—';
 
-  // Balance: prefer Redis, fall back to initial + ClickHouse total PnL
-  const balance = state.balance;
-  const displayBalance = balance ? Number(balance.balance) : INITIAL_BALANCE + chTotalPnl;
-  const displayPnl = balance ? Number(balance.pnl) : chTotalPnl;
-  const displayPnlPct = balance ? balance.pnl_pct : (chTotalPnl / INITIAL_BALANCE) * 100;
+  // Balance: always compute from initial + ClickHouse total PnL for accuracy
+  // Redis balance resets on restart and misses trades from prior runs
+  const displayBalance = INITIAL_BALANCE + chTotalPnl;
+  const displayPnl = chTotalPnl;
+  const displayPnlPct = (chTotalPnl / INITIAL_BALANCE) * 100;
 
   const pnlTrend = displayPnl >= 0 ? 'up' as const : 'down' as const;
 

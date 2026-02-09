@@ -142,10 +142,10 @@ export default function HealthPage() {
                         <Badge variant="secondary">{event.event_type}</Badge>
                       </TableCell>
                       <TableCell className="font-mono text-xs text-zinc-400">
-                        {event.order_id.slice(0, 8)}...
+                        {(event.order_id || '').slice(0, 8)}...
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400">
-                        {event.market_id.slice(0, 16)}
+                        {(event.market_id || '').slice(0, 16)}
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400">
                         {event.strategy}

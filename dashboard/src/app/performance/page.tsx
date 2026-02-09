@@ -18,6 +18,12 @@ import { TradesTable } from '@/components/charts/trades-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { StrategyPerformance, Trade, AdvancedMetrics, SignalComboWinRate } from '@/lib/types/trade';
 
+/** Safe Number conversion — returns 0 for null/undefined/NaN */
+function safeNum(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export default function PerformancePage() {
   const [perf, setPerf] = useState<StrategyPerformance | null>(null);
   const [equityData, setEquityData] = useState<Array<{ time: string; cumulative_pnl: number }>>([]);
@@ -26,22 +32,25 @@ export default function PerformancePage() {
   const [signalCombos, setSignalCombos] = useState<SignalComboWinRate[]>([]);
   const [strategy, setStrategy] = useState('singularity');
 
-  // Detect active strategy from SSE heartbeat
+  // Detect active strategy from SSE heartbeat (one-shot)
   useEffect(() => {
+    let closed = false;
     const es = new EventSource('/api/sse');
     const handler = (event: MessageEvent) => {
       try {
         const parsed = JSON.parse(event.data);
         if (parsed.type === 'bot-state' && parsed.data?.heartbeat?.strategy) {
           setStrategy(parsed.data.heartbeat.strategy);
+          closed = true;
           es.close();
         }
       } catch { /* ignore */ }
     };
     es.onmessage = handler;
-    // Close after 5s regardless
-    const timeout = setTimeout(() => es.close(), 5000);
-    return () => { es.close(); clearTimeout(timeout); };
+    es.onerror = () => { if (!closed) { closed = true; es.close(); } };
+    // Close after 5s regardless to prevent leak
+    const timeout = setTimeout(() => { if (!closed) { closed = true; es.close(); } }, 5000);
+    return () => { closed = true; es.close(); clearTimeout(timeout); };
   }, []);
 
   useEffect(() => {
@@ -69,19 +78,20 @@ export default function PerformancePage() {
     };
 
     fetchAll();
-    const interval = setInterval(fetchAll, 30000);
+    const interval = setInterval(fetchAll, 10000);
     return () => clearInterval(interval);
   }, [strategy]);
 
-  const winRate = perf && perf.trade_count > 0
-    ? ((perf.win_count / perf.trade_count) * 100).toFixed(1)
+  const winRate = perf && safeNum(perf.trade_count) > 0
+    ? ((safeNum(perf.win_count) / safeNum(perf.trade_count)) * 100).toFixed(1)
     : '—';
 
   // Build daily P&L bar chart data from trades
   const dailyPnlMap = new Map<string, number>();
   for (const t of trades) {
-    const day = t.entry_time.split(/[T ]/)[0];
-    dailyPnlMap.set(day, (dailyPnlMap.get(day) || 0) + Number(t.pnl));
+    const day = (t.entry_time || '').split(/[T ]/)[0];
+    if (!day) continue;
+    dailyPnlMap.set(day, (dailyPnlMap.get(day) || 0) + safeNum(t.pnl));
   }
   const dailyPnlData = Array.from(dailyPnlMap.entries())
     .map(([date, pnl]) => ({ date, pnl: Number(pnl.toFixed(2)) }))
@@ -90,10 +100,10 @@ export default function PerformancePage() {
   // Win rate by entry minute
   const minuteWins = new Map<number, { wins: number; total: number }>();
   for (const t of trades) {
-    const m = t.window_minute;
+    const m = t.window_minute ?? 0;
     const entry = minuteWins.get(m) || { wins: 0, total: 0 };
     entry.total++;
-    if (Number(t.pnl) > 0) entry.wins++;
+    if (safeNum(t.pnl) > 0) entry.wins++;
     minuteWins.set(m, entry);
   }
   const winByMinute = Array.from(minuteWins.entries())
@@ -110,12 +120,12 @@ export default function PerformancePage() {
 
       {/* Strategy Summary */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
-        <StatCard title="Total P&L" value={perf ? `$${Number(perf.total_pnl).toFixed(2)}` : '—'} trend={perf && Number(perf.total_pnl) >= 0 ? 'up' : 'down'} />
+        <StatCard title="Total P&L" value={perf ? `$${safeNum(perf.total_pnl).toFixed(2)}` : '—'} trend={perf && safeNum(perf.total_pnl) >= 0 ? 'up' : 'down'} />
         <StatCard title="Win Rate" value={winRate !== '—' ? `${winRate}%` : '—'} />
-        <StatCard title="Best Trade" value={perf ? `$${Number(perf.best_trade).toFixed(2)}` : '—'} trend="up" />
-        <StatCard title="Worst Trade" value={perf ? `$${Number(perf.worst_trade).toFixed(2)}` : '—'} trend="down" />
-        <StatCard title="Avg Position" value={perf ? `$${Number(perf.avg_position_size).toFixed(2)}` : '—'} />
-        <StatCard title="Avg Confidence" value={perf ? `${(Number(perf.avg_confidence) * 100).toFixed(1)}%` : '—'} />
+        <StatCard title="Best Trade" value={perf ? `$${safeNum(perf.best_trade).toFixed(2)}` : '—'} trend="up" />
+        <StatCard title="Worst Trade" value={perf ? `$${safeNum(perf.worst_trade).toFixed(2)}` : '—'} trend="down" />
+        <StatCard title="Avg Position" value={perf ? `$${safeNum(perf.avg_position_size).toFixed(2)}` : '—'} />
+        <StatCard title="Avg Confidence" value={perf ? `${(safeNum(perf.avg_confidence) * 100).toFixed(1)}%` : '—'} />
       </div>
 
       {/* Advanced Metrics Grid */}

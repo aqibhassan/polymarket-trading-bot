@@ -35,7 +35,7 @@ export function SignalPanel({ signals }: SignalPanelProps) {
                     <span className="text-xs text-zinc-300 w-28 truncate">{vote.name}</span>
                     {directionBadge(vote.direction)}
                   </div>
-                  <span className="text-xs font-mono text-zinc-400">{vote.strength.toFixed(0)}%</span>
+                  <span className="text-xs font-mono text-zinc-400">{(vote.strength ?? 0).toFixed(0)}%</span>
                 </div>
                 <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                   <div
@@ -43,7 +43,7 @@ export function SignalPanel({ signals }: SignalPanelProps) {
                       vote.direction === 'YES' ? 'bg-emerald-500' :
                       vote.direction === 'NO' ? 'bg-red-500' : 'bg-zinc-600'
                     }`}
-                    style={{ width: `${Math.min(100, Math.max(0, vote.strength))}%` }}
+                    style={{ width: `${Math.min(100, Math.max(0, vote.strength ?? 0))}%` }}
                   />
                 </div>
               </div>
@@ -56,7 +56,7 @@ export function SignalPanel({ signals }: SignalPanelProps) {
                   {directionBadge(signals.direction)}
                 </div>
                 <span className="text-sm font-mono font-bold text-zinc-200">
-                  {(signals.overall_confidence * 100).toFixed(1)}%
+                  {((signals.overall_confidence ?? 0) * 100).toFixed(1)}%
                 </span>
               </div>
               {signals.entry_generated && (

@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import type { Trade } from '@/lib/types/trade';
 
-export function useTrades(limit: number = 10, refreshInterval: number = 30000) {
+export function useTrades(limit: number = 10, refreshInterval: number = 10000) {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [loading, setLoading] = useState(true);
 

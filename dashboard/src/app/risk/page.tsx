@@ -1,36 +1,51 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useBotState } from '@/lib/hooks/use-bot-state';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { StatCard } from '@/components/charts/stat-card';
 import { Badge } from '@/components/ui/badge';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import type { Trade } from '@/lib/types/trade';
 
+const INITIAL_BALANCE = 10000;
+
 export default function RiskPage() {
-  const { state } = useBotState();
   const [killSwitch, setKillSwitch] = useState(false);
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [maxDrawdownPct, setMaxDrawdownPct] = useState(0);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const [ksRes, trRes, eqRes] = await Promise.all([
+        fetch('/api/kill-switch'),
+        fetch('/api/trades?limit=500'),
+        fetch('/api/equity-curve'),
+      ]);
+      const ksData = await ksRes.json();
+      const trData = await trRes.json();
+      const eqData = await eqRes.json();
+      setKillSwitch(ksData.active || false);
+      setTrades(trData.trades || []);
+
+      // Compute peak-to-trough drawdown from ClickHouse equity curve
+      const curve: Array<{ cumulative_pnl: number }> = eqData.data || [];
+      let peak = INITIAL_BALANCE;
+      let maxDd = 0;
+      for (const pt of curve) {
+        const equity = INITIAL_BALANCE + Number(pt.cumulative_pnl);
+        if (equity > peak) peak = equity;
+        const dd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+        if (dd > maxDd) maxDd = dd;
+      }
+      setMaxDrawdownPct(Number(maxDd.toFixed(2)));
+    } catch { /* fetch failed */ }
+  }, []);
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [ksRes, trRes] = await Promise.all([
-          fetch('/api/kill-switch'),
-          fetch('/api/trades?limit=100'),
-        ]);
-        const ksData = await ksRes.json();
-        const trData = await trRes.json();
-        setKillSwitch(ksData.active || false);
-        setTrades(trData.trades || []);
-      } catch { /* fetch failed */ }
-    };
-
     fetchData();
-    const interval = setInterval(fetchData, 15000);
+    const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchData]);
 
   // Calculate max consecutive losses
   let maxConsecLosses = 0;
@@ -44,19 +59,17 @@ export default function RiskPage() {
     }
   }
 
-  // Drawdown calculation
-  const daily = state.daily;
-  const balance = state.balance;
-  const drawdownPct = balance
-    ? Math.abs(Math.min(0, Number(balance.pnl) / Number(balance.initial_balance) * 100))
-    : 0;
+  // Drawdown from ClickHouse equity curve (peak-to-trough, accurate across restarts)
   const drawdownLimit = 5; // 5% max daily drawdown
+
+  // Total fees from ClickHouse trades (accurate, not Redis)
+  const totalFees = trades.reduce((s, t) => s + Number(t.fee_cost || 0), 0);
 
   // Daily fees from trades
   const dailyFeeMap = new Map<string, number>();
   for (const t of trades) {
     const day = t.entry_time.split(/[T ]/)[0];
-    dailyFeeMap.set(day, (dailyFeeMap.get(day) || 0) + Number(t.fee_cost));
+    dailyFeeMap.set(day, (dailyFeeMap.get(day) || 0) + Number(t.fee_cost || 0));
   }
   const feeData = Array.from(dailyFeeMap.entries())
     .map(([date, fees]) => ({ date, fees: Number(fees.toFixed(4)) }))
@@ -93,25 +106,25 @@ export default function RiskPage() {
       {/* Risk Stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard title="Max Consecutive Losses" value={maxConsecLosses} />
-        <StatCard title="Current Drawdown" value={`${drawdownPct.toFixed(2)}%`} subtitle={`of ${drawdownLimit}% limit`} trend={drawdownPct > 2 ? 'down' : 'neutral'} />
-        <StatCard title="Total Fees Paid" value={`$${trades.reduce((s, t) => s + Number(t.fee_cost), 0).toFixed(2)}`} />
+        <StatCard title="Max Drawdown" value={`${maxDrawdownPct}%`} subtitle={`of ${drawdownLimit}% limit`} trend={maxDrawdownPct > 2 ? 'down' : 'neutral'} />
+        <StatCard title="Total Fees Paid" value={`$${totalFees.toFixed(2)}`} />
       </div>
 
       {/* Drawdown Gauge */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm font-medium text-zinc-400">Drawdown vs Limit</CardTitle>
+          <CardTitle className="text-sm font-medium text-zinc-400">Max Drawdown vs Limit</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
-              <span className="text-zinc-400">Current: {drawdownPct.toFixed(2)}%</span>
+              <span className="text-zinc-400">Peak-to-Trough: {maxDrawdownPct}%</span>
               <span className="text-zinc-400">Limit: {drawdownLimit}%</span>
             </div>
             <div className="h-4 w-full rounded-full bg-zinc-800 overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all ${drawdownPct > 3 ? 'bg-red-500' : drawdownPct > 1.5 ? 'bg-yellow-500' : 'bg-emerald-500'}`}
-                style={{ width: `${Math.min(100, (drawdownPct / drawdownLimit) * 100)}%` }}
+                className={`h-full rounded-full transition-all ${maxDrawdownPct > 3 ? 'bg-red-500' : maxDrawdownPct > 1.5 ? 'bg-yellow-500' : 'bg-emerald-500'}`}
+                style={{ width: `${Math.min(100, (maxDrawdownPct / drawdownLimit) * 100)}%` }}
               />
             </div>
           </div>

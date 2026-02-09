@@ -14,7 +14,11 @@ interface FeedEntry extends LastTrade {
 }
 
 function timeAgo(ts: string): string {
-  const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (!ts) return '--';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '--';
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 0) return 'just now';
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   return `${Math.floor(diff / 3600)}h ago`;
@@ -75,7 +79,8 @@ export function TradeFeed({ lastTrade }: TradeFeedProps) {
         ) : (
           <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
             {feed.map((t) => {
-              const pnl = Number(t.pnl);
+              const raw = Number(t.pnl);
+              const pnl = Number.isFinite(raw) ? raw : 0;
               return (
                 <div
                   key={t.trade_id}
