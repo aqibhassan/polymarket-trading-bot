@@ -130,7 +130,7 @@ services:
         max-file: "3"
 
   grafana:
-    image: grafana/grafana:10-oss
+    image: grafana/grafana:11.4.0-ubuntu
     restart: unless-stopped
     ports:
       - "127.0.0.1:3000:3000"
