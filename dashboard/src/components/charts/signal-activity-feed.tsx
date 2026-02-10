@@ -28,6 +28,18 @@ function timeAgo(ts: string): string {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
+/** Derive display label: actual outcome vs re-evaluation while in position */
+function outcomeLabel(evt: SignalActivityEvent): { text: string; style: string } {
+  if (evt.has_position) {
+    // Re-evaluation while already holding a position
+    return { text: 'HELD', style: 'border-blue-600 text-blue-400' };
+  }
+  if (evt.outcome === 'entry') {
+    return { text: 'ENTRY', style: '' }; // uses variant="success"
+  }
+  return { text: 'SKIP', style: 'border-amber-600 text-amber-400' };
+}
+
 export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
   const [feed, setFeed] = useState<SignalActivityEvent[]>([]);
   const seenIds = useRef(new Set<string>());
@@ -43,7 +55,6 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
       }
     }
     if (changed) {
-      // Merge: use activity as source of truth (already ordered newest-first from Redis LPUSH)
       const merged = new Map<string, SignalActivityEvent>();
       for (const evt of activity) merged.set(evt.id, evt);
       for (const evt of feed) {
@@ -67,45 +78,55 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
           </div>
         ) : (
           <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
-            {feed.map((evt) => (
-              <div
-                key={evt.id}
-                className="flex items-center justify-between rounded-md border border-zinc-800 p-2"
-              >
-                <div className="flex items-center gap-2">
-                  <Badge
-                    variant={evt.outcome === 'entry' ? 'success' : 'outline'}
-                    className={`text-xs ${evt.outcome === 'skip' ? 'border-amber-600 text-amber-400' : ''}`}
-                  >
-                    {evt.outcome === 'entry' ? 'ENTRY' : 'SKIP'}
-                  </Badge>
-                  {evt.direction && (
+            {feed.map((evt) => {
+              const label = outcomeLabel(evt);
+              const dimmed = evt.has_position;
+              return (
+                <div
+                  key={evt.id}
+                  className={`flex items-center justify-between rounded-md border p-2 ${
+                    dimmed ? 'border-zinc-800/50 opacity-60' : 'border-zinc-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
                     <Badge
-                      variant={evt.direction === 'YES' ? 'success' : 'destructive'}
-                      className="text-xs"
+                      variant={!evt.has_position && evt.outcome === 'entry' ? 'success' : 'outline'}
+                      className={`text-xs ${label.style}`}
                     >
-                      {evt.direction}
+                      {label.text}
                     </Badge>
-                  )}
-                  <span className="text-xs text-zinc-500">
-                    {REASON_LABELS[evt.reason] || evt.reason}
-                  </span>
-                </div>
-                <div className="flex items-center gap-3 text-right">
-                  {evt.confidence > 0 && (
-                    <span className="font-mono text-sm text-zinc-300">
-                      {(evt.confidence * 100).toFixed(1)}%
+                    {evt.direction && (
+                      <Badge
+                        variant={evt.direction === 'YES' ? 'success' : 'destructive'}
+                        className="text-xs"
+                      >
+                        {evt.direction}
+                      </Badge>
+                    )}
+                    <span className="text-xs text-zinc-500">
+                      {evt.has_position
+                        ? evt.outcome === 'entry'
+                          ? 'Signal confirmed (in position)'
+                          : `${REASON_LABELS[evt.reason] || evt.reason} (in position)`
+                        : REASON_LABELS[evt.reason] || evt.reason}
                     </span>
-                  )}
-                  <span className="text-xs text-zinc-500">
-                    m{evt.minute}
-                  </span>
-                  <span className="text-xs text-zinc-500 w-14 text-right">
-                    {timeAgo(evt.timestamp)}
-                  </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-right">
+                    {evt.confidence > 0 && (
+                      <span className="font-mono text-sm text-zinc-300">
+                        {(evt.confidence * 100).toFixed(1)}%
+                      </span>
+                    )}
+                    <span className="text-xs text-zinc-500">
+                      m{evt.minute}
+                    </span>
+                    <span className="text-xs text-zinc-500 w-14 text-right">
+                      {timeAgo(evt.timestamp)}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </CardContent>

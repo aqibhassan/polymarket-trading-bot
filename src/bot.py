@@ -834,6 +834,7 @@ class BotOrchestrator:
                             "confidence": last_eval.get("confidence", 0),
                             "votes": last_eval.get("votes", {}),
                             "detail": last_eval.get("detail", ""),
+                            "has_position": has_open_position,
                         }
                         await cache.push_to_list(
                             "bot:signal_activity", activity_event,
