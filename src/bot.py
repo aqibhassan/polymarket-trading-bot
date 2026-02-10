@@ -810,34 +810,25 @@ class BotOrchestrator:
                         s for s in signals
                         if s.signal_type == SignalType.ENTRY
                     ]
-                    votes_str = ""
-                    if entry_signals:
-                        votes_str = entry_signals[0].metadata.get("votes", "")
-                    # Parse vote string into structured data
-                    parsed_votes = []
-                    if votes_str:
+                    # Read vote details from strategy (always available, even during skips)
+                    strat_eval = getattr(self._strategy, '_last_evaluation', {})
+                    vote_details = strat_eval.get("vote_details", [])
+                    parsed_votes = [
+                        {"name": vd["name"], "direction": vd["direction"], "strength": round(float(vd["strength"]) * 100, 1)}
+                        for vd in vote_details
+                        if isinstance(vd, dict) and "name" in vd
+                    ]
+                    if parsed_votes:
                         import json as _json
-                        for part in votes_str.split(", "):
-                            # Format: "name=DIR(strength)"
-                            eq = part.find("=")
-                            paren = part.find("(")
-                            if eq > 0 and paren > eq:
-                                vname = part[:eq]
-                                vdir = part[eq + 1:paren]
-                                vstr = part[paren + 1:].rstrip(")")
-                                parsed_votes.append({
-                                    "name": vname,
-                                    "direction": vdir,
-                                    "strength": round(float(vstr) * 100, 1),
-                                })
                         last_signal_details = _json.dumps(parsed_votes)
-                    overall_conf = entry_signals[0].confidence.overall if entry_signals and entry_signals[0].confidence else 0.0
-                    overall_dir = entry_signals[0].metadata.get("direction", "").upper() if entry_signals else ""
+                    # Confidence/direction from entry signal if available, else from strategy eval
+                    overall_conf = entry_signals[0].confidence.overall if entry_signals and entry_signals[0].confidence else strat_eval.get("confidence", 0.0)
+                    overall_dir = entry_signals[0].metadata.get("direction", "").upper() if entry_signals else strat_eval.get("direction", "").upper()
                     await cache.set("bot:signals", {
                         "timestamp": datetime.now(tz=UTC).isoformat(),
                         "minute": minute_in_window,
                         "votes": parsed_votes,
-                        "overall_confidence": round(overall_conf, 4),
+                        "overall_confidence": round(float(overall_conf), 4),
                         "direction": overall_dir,
                         "entry_generated": bool(entry_signals),
                     }, ttl=120)
@@ -860,12 +851,15 @@ class BotOrchestrator:
                         entry_price = sig.entry_price or yes_price
 
                         # --- Position sizing: fixed bet or Kelly ---
+                        # Sizer returns USD amount; convert to shares (USD / entry_price)
+                        # because downstream (cost calc, paper trader, PnL) all expect shares.
                         if self._fixed_bet_size > 0:
-                            # Flat bet mode — fixed USD per trade
-                            position_size = min(self._fixed_bet_size, paper_trader.balance)
+                            # Flat bet mode — fixed USD per trade → shares
+                            usd_bet = min(self._fixed_bet_size, paper_trader.balance)
+                            position_size = usd_bet / entry_price
                             sizing = PositionSize(
-                                recommended_size=position_size,
-                                max_allowed=position_size,
+                                recommended_size=usd_bet,
+                                max_allowed=usd_bet,
                                 kelly_fraction=Decimal("0"),
                                 capped_reason="fixed_bet",
                             )
@@ -875,7 +869,8 @@ class BotOrchestrator:
                                 entry_price=entry_price,
                                 estimated_win_prob=estimated_win_prob,
                             )
-                            position_size = sizing.recommended_size
+                            # Convert USD recommendation to shares
+                            position_size = sizing.recommended_size / entry_price
 
                         # Publish sizing details to Redis for dashboard
                         try:

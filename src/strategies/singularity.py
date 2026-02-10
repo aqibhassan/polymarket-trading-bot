@@ -232,8 +232,14 @@ class SingularityStrategy(BaseStrategy):
         if time_vote is not None:
             votes.append(time_vote)
 
+        # Build vote details for dashboard (all 5 slots, voted or not)
+        _vote_results: list[dict[str, Any]] = []
+        for _sv in [momentum_vote, ofi_vote, futures_vote, vol_vote, time_vote]:
+            if _sv is not None:
+                _vote_results.append({"name": _sv.name, "direction": _sv.direction, "strength": round(_sv.strength, 4)})
+
         if not votes:
-            self._last_evaluation = {"outcome": "skip", "reason": "no_votes", "minute": minute_in_window, "market_id": market_id}
+            self._last_evaluation = {"outcome": "skip", "reason": "no_votes", "minute": minute_in_window, "market_id": market_id, "vote_details": _vote_results}
             return signals
 
         # --- Aggregate votes ---
@@ -273,6 +279,7 @@ class SingularityStrategy(BaseStrategy):
                 "minute": minute_in_window, "market_id": market_id,
                 "detail": f"YES={yes_count} NO={no_count} neutral={len(neutral_votes)} need={effective_min}",
                 "votes": {"yes": yes_count, "no": no_count, "neutral": len(neutral_votes), "required": effective_min},
+                "vote_details": _vote_results,
             }
             return signals
 
@@ -299,6 +306,7 @@ class SingularityStrategy(BaseStrategy):
                     "minute": minute_in_window, "market_id": market_id,
                     "direction": direction_str,
                     "detail": f"dir={direction_str} cum_return={cum_return_pct:+.4f}% threshold={self._contrarian_threshold_pct}%",
+                    "vote_details": _vote_results,
                 }
                 return signals
 
@@ -327,6 +335,7 @@ class SingularityStrategy(BaseStrategy):
                 "direction": direction_str,
                 "confidence": round(overall_confidence, 4),
                 "detail": f"confidence={overall_confidence:.4f} < threshold={self._min_confidence}",
+                "vote_details": _vote_results,
             }
             return signals
 
@@ -372,6 +381,7 @@ class SingularityStrategy(BaseStrategy):
             "confidence": round(overall_confidence, 4),
             "detail": f"{len(agreeing_votes)}/{available_sources} signals agree",
             "votes": {"yes": yes_count, "no": no_count, "neutral": len(neutral_votes)},
+            "vote_details": _vote_results,
         }
 
         logger.info(
