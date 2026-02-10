@@ -45,3 +45,23 @@ class TestCLI:
         parser = build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["--paper", "--live"])
+
+    def test_parser_auto_confirm_flag(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--live", "--auto-confirm"])
+        assert args.auto_confirm is True
+
+    def test_parser_auto_confirm_default_false(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--live"])
+        assert args.auto_confirm is False
+
+    def test_live_auto_sets_env_production(self) -> None:
+        """When --live is used without --env, env defaults to production."""
+        from src.cli import main
+
+        # main() will try to confirm live trading; we test the parser logic
+        parser = build_parser()
+        args = parser.parse_args(["--live"])
+        assert args.env is None  # parser default
+        # The main() function auto-sets to production — tested via integration

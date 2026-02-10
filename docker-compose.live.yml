@@ -1,0 +1,55 @@
+# Live trading overlay — use with:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.live.yml up -d
+#
+# Requires POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER_ADDRESS in .env
+# WARNING: This runs real trades with real funds.
+
+services:
+  mvhe:
+    command: ["--live", "--strategy", "singularity", "--env", "production", "--auto-confirm"]
+    environment:
+      MVHE_LIVE_AUTO_CONFIRM: "true"
+      POLYMARKET_PRIVATE_KEY: ${POLYMARKET_PRIVATE_KEY}
+      POLYMARKET_FUNDER_ADDRESS: ${POLYMARKET_FUNDER_ADDRESS:-}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+          cpus: "0.5"
+
+  nginx:
+    image: nginx:1.25-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - certbot_conf:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+    depends_on:
+      - dashboard
+      - grafana
+    networks:
+      - frontend
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    # Renewal: docker compose run certbot renew
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done'"
+
+volumes:
+  certbot_conf:
+  certbot_www:

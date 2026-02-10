@@ -1,0 +1,26 @@
+# Production overlay — conservative live trading parameters.
+# Loaded on top of default.toml when --env production is specified.
+
+[risk]
+max_position_pct = 0.01              # Start 1% (paper uses 5%)
+min_position_pct = 0.005
+max_daily_drawdown_pct = 0.03        # 3% kill switch (paper uses 5%)
+kelly_multiplier = 0.15              # Eighth-Kelly (paper uses quarter)
+
+[risk.live_safety]
+balance_floor_pct = 0.50             # Halt if balance < 50% of initial
+max_consecutive_losses = 5           # Halt after 5 consecutive losses
+ramp_enabled = true
+ramp_day_1_max_pct = 0.01           # Week 1: 1%
+ramp_day_7_max_pct = 0.02           # Week 2-4: 2%
+ramp_day_30_max_pct = 0.05          # Month 2+: 5% (full)
+
+[risk.fees]
+slippage_bps = 0                     # Real slippage observed from fills
+
+[execution]
+mode = "live"
+order_timeout_seconds = 30
+order_max_retries = 1
+circuit_breaker_max_failures = 3
+circuit_breaker_cooldown_seconds = 120

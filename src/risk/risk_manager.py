@@ -27,11 +27,15 @@ class RiskManager:
         max_daily_drawdown_pct: Decimal = Decimal("0.05"),
         max_order_book_pct: Decimal = Decimal("0.10"),
         kill_switch: KillSwitch | None = None,
+        balance_floor_pct: Decimal = Decimal("0"),
+        initial_balance: Decimal = Decimal("0"),
     ) -> None:
         self._max_position_pct = max_position_pct
         self._max_daily_drawdown_pct = max_daily_drawdown_pct
         self._max_order_book_pct = max_order_book_pct
         self._kill_switch = kill_switch or KillSwitch(max_daily_drawdown_pct)
+        self._balance_floor_pct = balance_floor_pct
+        self._initial_balance = initial_balance
 
     def has_stop_loss(self, signal: Signal) -> bool:
         """Check whether the signal has a stop-loss set."""
@@ -63,6 +67,20 @@ class RiskManager:
         # 0. Zero/negative balance — reject immediately
         if balance <= 0:
             reason = "zero or negative balance — cannot trade"
+            log.warning("risk_rejected", reason=reason, market=signal.market_id)
+            return RiskDecision(approved=False, reason=reason)
+
+        # 0b. Balance floor check — prevent ruin
+        if (
+            self._balance_floor_pct > 0
+            and self._initial_balance > 0
+            and balance < self._initial_balance * self._balance_floor_pct
+        ):
+            floor = self._initial_balance * self._balance_floor_pct
+            reason = (
+                f"balance {balance} below floor "
+                f"{self._balance_floor_pct * 100}% of initial ({floor})"
+            )
             log.warning("risk_rejected", reason=reason, market=signal.market_id)
             return RiskDecision(approved=False, reason=reason)
 

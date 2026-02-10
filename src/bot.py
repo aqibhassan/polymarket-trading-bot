@@ -186,7 +186,7 @@ class BotOrchestrator:
         cache: RedisCache,
         *,
         start_time: Any,
-        paper_trader: Any,
+        current_balance: Any,
         initial_balance: Any,
         daily_pnl: Any,
         trade_count: int,
@@ -220,7 +220,7 @@ class BotOrchestrator:
             }, ttl=120)
 
             # Balance
-            balance = paper_trader.balance
+            balance = current_balance
             pnl = balance - initial_balance
             pnl_pct = float(pnl / initial_balance * 100) if initial_balance else 0.0
             await cache.set("bot:balance", {
@@ -387,6 +387,40 @@ class BotOrchestrator:
                 str(self._config.get("strategy.momentum_confirmation.estimated_win_prob", 0.884))
             )
 
+        # --- Live safety config ---
+        balance_floor_pct = Decimal(
+            str(self._config.get("risk.live_safety.balance_floor_pct", 0))
+        )
+        max_consecutive_losses = int(
+            self._config.get("risk.live_safety.max_consecutive_losses", 0)
+        )
+        ramp_enabled = bool(
+            self._config.get("risk.live_safety.ramp_enabled", False)
+        )
+        ramp_day_1_max_pct = Decimal(
+            str(self._config.get("risk.live_safety.ramp_day_1_max_pct", 0.01))
+        )
+        ramp_day_7_max_pct = Decimal(
+            str(self._config.get("risk.live_safety.ramp_day_7_max_pct", 0.02))
+        )
+        ramp_day_30_max_pct = Decimal(
+            str(self._config.get("risk.live_safety.ramp_day_30_max_pct", 0.05))
+        )
+
+        # Execution config
+        order_timeout = float(
+            self._config.get("execution.order_timeout_seconds", 0)
+        )
+        order_max_retries = int(
+            self._config.get("execution.order_max_retries", 0)
+        )
+        cb_max_failures = int(
+            self._config.get("execution.circuit_breaker_max_failures", 5)
+        )
+        cb_cooldown = float(
+            self._config.get("execution.circuit_breaker_cooldown_seconds", 60)
+        )
+
         # --- Component setup ---
         kline_ws_url = os.environ.get(
             "BINANCE_WS_URL",
@@ -409,13 +443,19 @@ class BotOrchestrator:
         for key in await redis_conn.keys("mvhe:bot:*"):
             await redis_conn.delete(key)
         kill_switch = KillSwitch(
-            max_daily_drawdown_pct, redis_client=redis_conn, async_redis=True,
+            max_daily_drawdown_pct,
+            redis_client=redis_conn,
+            async_redis=True,
+            max_consecutive_losses=max_consecutive_losses,
         )
         await kill_switch.async_load_state()
+        await kill_switch.async_load_consecutive_losses()
         risk_mgr = RiskManager(
             max_position_pct=max_position_pct,
             max_daily_drawdown_pct=max_daily_drawdown_pct,
             kill_switch=kill_switch,
+            balance_floor_pct=balance_floor_pct,
+            initial_balance=initial_balance,
         )
         position_sizer = PositionSizer(
             max_position_pct=max_position_pct,
@@ -425,8 +465,55 @@ class BotOrchestrator:
         cost_calculator = CostCalculator()
         portfolio = Portfolio()
         portfolio.update_equity(initial_balance)
-        paper_trader = PaperTrader(initial_balance=initial_balance)
-        bridge = ExecutionBridge(mode=self._mode, paper_trader=paper_trader)
+
+        from src.execution.circuit_breaker import CircuitBreaker
+
+        circuit_breaker = CircuitBreaker(
+            max_failures=cb_max_failures,
+            cooldown_seconds=cb_cooldown,
+        )
+
+        # --- Paper vs Live trader setup ---
+        live_trader: Any = None
+        paper_trader: Any = None
+        if self._mode == "live":
+            from src.execution.polymarket_signer import PolymarketLiveTrader
+
+            live_trader = PolymarketLiveTrader(
+                clob_url=str(self._config.get(
+                    "polymarket.clob_url", "https://clob.polymarket.com",
+                )),
+                chain_id=int(self._config.get("polymarket.chain_id", 137)),
+            )
+            live_balance = await live_trader.get_balance()
+            if live_balance is not None and live_balance > 0:
+                initial_balance = Decimal(str(live_balance))
+                portfolio.update_equity(initial_balance)
+                risk_mgr._initial_balance = initial_balance
+                logger.info("live_balance_synced", balance=str(initial_balance))
+            elif live_balance is not None and live_balance <= 0:
+                logger.critical("live_zero_balance", balance=str(live_balance))
+                return
+            bridge = ExecutionBridge(
+                mode=self._mode,
+                live_trader=live_trader,
+                circuit_breaker=circuit_breaker,
+                order_timeout_seconds=order_timeout,
+                order_max_retries=order_max_retries,
+            )
+        else:
+            paper_trader = PaperTrader(initial_balance=initial_balance)
+            bridge = ExecutionBridge(
+                mode=self._mode,
+                paper_trader=paper_trader,
+                circuit_breaker=circuit_breaker,
+                order_timeout_seconds=order_timeout,
+                order_max_retries=order_max_retries,
+            )
+
+        # Cached balance for both modes
+        cached_balance = initial_balance
+        last_balance_sync = datetime.now(tz=UTC)
         ch_store: ClickHouseStore | None = None
         try:
             ch_store = ClickHouseStore()
@@ -439,6 +526,24 @@ class BotOrchestrator:
         await futures_feed.connect()
         ws_connected = True
         self._touch_sentinel(_WS_CONNECTED_FILE)
+
+        # --- Position ramp schedule for live ---
+        live_start_date = datetime.now(tz=UTC).date()
+        if self._mode == "live" and ramp_enabled:
+            # Try to load live_start_date from Redis; persist if first run
+            try:
+                stored = await redis_conn.get("mvhe:live_start_date")
+                if stored is not None:
+                    raw = stored if isinstance(stored, str) else stored.decode()
+                    from datetime import date as _date_cls
+                    live_start_date = _date_cls.fromisoformat(raw)
+                else:
+                    await redis_conn.set(
+                        "mvhe:live_start_date",
+                        live_start_date.isoformat(),
+                    )
+            except Exception:
+                logger.warning("ramp_live_start_date_load_failed", exc_info=True)
 
         # --- Window state ---
         window_candles: list[Candle] = []
@@ -489,7 +594,7 @@ class BotOrchestrator:
                     loss_count = 0
                     # Reset portfolio drawdown tracking for new day
                     portfolio = Portfolio()
-                    portfolio.update_equity(paper_trader.balance)
+                    portfolio.update_equity(cached_balance)
                     last_reset_date = now_utc.date()
                     logger.info("daily_stats_reset", date=str(last_reset_date))
 
@@ -552,15 +657,35 @@ class BotOrchestrator:
                             )
                         except Exception:
                             logger.warning("swing_window_sell_failed", exc_info=True)
-                        pnl_wb = (exit_price_wb - last_entry_price) * (
+                        # P&L with fee deduction (entry + exit)
+                        gross_pnl_wb = (exit_price_wb - last_entry_price) * (
                             last_position_size or Decimal("0")
                         )
+                        exit_notional_wb = exit_price_wb * (last_position_size or Decimal("0"))
+                        exit_fee_wb = CostCalculator.polymarket_fee(exit_notional_wb, exit_price_wb)
+                        pnl_wb = gross_pnl_wb - last_fee_cost - exit_fee_wb
                         daily_pnl += pnl_wb
-                        portfolio.update_equity(paper_trader.balance)
-                        if pnl_wb >= 0:
+
+                        # Sync balance after trade
+                        if self._mode == "live" and live_trader is not None:
+                            try:
+                                synced = await live_trader.get_balance()
+                                if synced is not None and synced > 0:
+                                    cached_balance = Decimal(str(synced))
+                                    last_balance_sync = datetime.now(tz=UTC)
+                            except Exception:
+                                logger.debug("post_trade_balance_sync_failed", exc_info=True)
+                        elif paper_trader is not None:
+                            cached_balance = paper_trader.balance
+
+                        portfolio.update_equity(cached_balance)
+
+                        is_win_wb = pnl_wb >= 0
+                        if is_win_wb:
                             win_count += 1
                         else:
                             loss_count += 1
+                        await kill_switch.async_record_trade_result(is_win=is_win_wb)
                         trade_id_wb = ""
                         if ch_store is not None:
                             trade_id_wb = await self._record_completed_trade(
@@ -721,13 +846,45 @@ class BotOrchestrator:
                 yes_price = self._compute_yes_price(cum_return)
                 last_tick_yes_price = yes_price
 
+                # --- Position ramp override for live ---
+                effective_max_position_pct = max_position_pct
+                if self._mode == "live" and ramp_enabled:
+                    days_live = (datetime.now(tz=UTC).date() - live_start_date).days
+                    if days_live < 7:
+                        effective_max_position_pct = min(
+                            max_position_pct, ramp_day_1_max_pct,
+                        )
+                    elif days_live < 30:
+                        effective_max_position_pct = min(
+                            max_position_pct, ramp_day_7_max_pct,
+                        )
+                    else:
+                        effective_max_position_pct = min(
+                            max_position_pct, ramp_day_30_max_pct,
+                        )
+
+                # --- Periodic balance sync (every 5 min) for live ---
+                now_sync = datetime.now(tz=UTC)
+                if (
+                    self._mode == "live"
+                    and live_trader is not None
+                    and (now_sync - last_balance_sync).total_seconds() >= 300
+                ):
+                    try:
+                        synced = await live_trader.get_balance()
+                        if synced is not None and synced > 0:
+                            cached_balance = Decimal(str(synced))
+                            last_balance_sync = now_sync
+                    except Exception:
+                        logger.debug("periodic_balance_sync_failed", exc_info=True)
+
                 logger.info(
                     "swing_tick",
                     minute=minute_in_window,
                     close=str(latest.close),
                     cum_return_pct=round(cum_return * 100, 4),
                     yes_price=str(yes_price),
-                    balance=str(paper_trader.balance),
+                    balance=str(cached_balance),
                     daily_pnl=str(daily_pnl),
                     trades_today=trade_count,
                 )
@@ -736,7 +893,7 @@ class BotOrchestrator:
                 await self._publish_state(
                     cache,
                     start_time=start_time,
-                    paper_trader=paper_trader,
+                    current_balance=cached_balance,
                     initial_balance=initial_balance,
                     daily_pnl=daily_pnl,
                     trade_count=trade_count,
@@ -757,11 +914,11 @@ class BotOrchestrator:
                 )
 
                 # --- Check kill switch ---
-                if await kill_switch.async_check(daily_pnl, paper_trader.balance):
+                if await kill_switch.async_check(daily_pnl, cached_balance):
                     logger.critical(
                         "swing_kill_switch_active",
                         daily_pnl=str(daily_pnl),
-                        balance=str(paper_trader.balance),
+                        balance=str(cached_balance),
                     )
                     try:
                         await asyncio.wait_for(
@@ -876,7 +1033,7 @@ class BotOrchestrator:
                         # because downstream (cost calc, paper trader, PnL) all expect shares.
                         if self._fixed_bet_size > 0:
                             # Flat bet mode — fixed USD per trade → shares
-                            usd_bet = min(self._fixed_bet_size, paper_trader.balance)
+                            usd_bet = min(self._fixed_bet_size, cached_balance)
                             position_size = usd_bet / entry_price
                             sizing = PositionSize(
                                 recommended_size=usd_bet,
@@ -886,7 +1043,7 @@ class BotOrchestrator:
                             )
                         else:
                             sizing = position_sizer.calculate_binary(
-                                balance=paper_trader.balance,
+                                balance=cached_balance,
                                 entry_price=entry_price,
                                 estimated_win_prob=estimated_win_prob,
                             )
@@ -900,7 +1057,7 @@ class BotOrchestrator:
                                 "recommended_size": str(sizing.recommended_size),
                                 "max_allowed": str(sizing.max_allowed),
                                 "capped_reason": sizing.capped_reason or "none",
-                                "balance": str(paper_trader.balance),
+                                "balance": str(cached_balance),
                                 "entry_price": str(entry_price),
                                 "estimated_win_prob": str(estimated_win_prob),
                             }, ttl=120)
@@ -922,8 +1079,8 @@ class BotOrchestrator:
                             entry_price=entry_price,
                             position_size=position_size,
                         )
-                        # Ensure USDC cost + fees fits within max_position_pct cap
-                        max_allowed = paper_trader.balance * max_position_pct
+                        # Ensure USDC cost + fees fits within position cap (ramp-aware)
+                        max_allowed = cached_balance * effective_max_position_pct
                         usdc_cost = position_size * entry_price + costs.fee_cost
                         if usdc_cost > max_allowed and costs.fee_cost > 0:
                             position_size = (max_allowed - costs.fee_cost) / entry_price
@@ -943,7 +1100,7 @@ class BotOrchestrator:
                             signal=sig,
                             position_size=notional_usdc,
                             current_drawdown=current_drawdown,
-                            balance=paper_trader.balance,
+                            balance=cached_balance,
                             estimated_fee=costs.fee_cost,
                         )
                         if decision.approved:
@@ -977,11 +1134,25 @@ class BotOrchestrator:
                             last_token_id = token_id
                             last_market_id = market_id
                             last_signal_details_str = last_signal_details
+
+                            # Sync balance after entry
+                            if self._mode == "live" and live_trader is not None:
+                                try:
+                                    synced = await live_trader.get_balance()
+                                    if synced is not None and synced > 0:
+                                        cached_balance = Decimal(str(synced))
+                                        last_balance_sync = datetime.now(tz=UTC)
+                                except Exception:
+                                    logger.debug("post_entry_balance_sync_failed", exc_info=True)
+                            elif paper_trader is not None:
+                                cached_balance = paper_trader.balance
+
                             # Record entry audit event
+                            entry_event = "LIVE_ENTRY" if self._mode == "live" else "PAPER_ENTRY"
                             if ch_store is not None:
                                 try:
                                     await ch_store.insert_audit_event({
-                                        "event_type": "PAPER_ENTRY",
+                                        "event_type": entry_event,
                                         "market_id": market_id,
                                         "strategy": self._strategy_name,
                                         "details": (
@@ -994,7 +1165,7 @@ class BotOrchestrator:
                                 except Exception:
                                     logger.debug("clickhouse_audit_failed", exc_info=True)
                             # Track equity after entry (balance decreased by cost)
-                            portfolio.update_equity(paper_trader.balance)
+                            portfolio.update_equity(cached_balance)
                             logger.info(
                                 "swing_entry_executed",
                                 direction=sig.direction.value,
@@ -1003,7 +1174,7 @@ class BotOrchestrator:
                                 kelly=str(sizing.kelly_fraction),
                                 capped=sizing.capped_reason or "none",
                                 est_fee=str(costs.fee_cost),
-                                balance=str(paper_trader.balance),
+                                balance=str(cached_balance),
                             )
                             # Publish ENTRY event immediately (one per window)
                             if not window_activity_published:
@@ -1085,15 +1256,35 @@ class BotOrchestrator:
                             )
                         except Exception:
                             logger.warning("swing_exit_sell_failed", exc_info=True)
-                        pnl_ex = (exit_price_ex - (last_entry_price or Decimal("0"))) * (
+                        # P&L with fee deduction (entry + exit)
+                        gross_pnl_ex = (exit_price_ex - (last_entry_price or Decimal("0"))) * (
                             last_position_size or Decimal("0")
                         )
+                        exit_notional_ex = exit_price_ex * (last_position_size or Decimal("0"))
+                        exit_fee_ex = CostCalculator.polymarket_fee(exit_notional_ex, exit_price_ex)
+                        pnl_ex = gross_pnl_ex - last_fee_cost - exit_fee_ex
                         daily_pnl += pnl_ex
-                        portfolio.update_equity(paper_trader.balance)
-                        if pnl_ex > 0:
+
+                        # Sync balance after trade
+                        if self._mode == "live" and live_trader is not None:
+                            try:
+                                synced = await live_trader.get_balance()
+                                if synced is not None and synced > 0:
+                                    cached_balance = Decimal(str(synced))
+                                    last_balance_sync = datetime.now(tz=UTC)
+                            except Exception:
+                                logger.debug("post_trade_balance_sync_failed", exc_info=True)
+                        elif paper_trader is not None:
+                            cached_balance = paper_trader.balance
+
+                        portfolio.update_equity(cached_balance)
+
+                        is_win_ex = pnl_ex > 0
+                        if is_win_ex:
                             win_count += 1
                         else:
                             loss_count += 1
+                        await kill_switch.async_record_trade_result(is_win=is_win_ex)
                         exit_reason_str = str(sig.exit_reason) if sig.exit_reason else "signal_exit"
                         trade_id_ex = ""
                         if ch_store is not None:
@@ -1134,7 +1325,7 @@ class BotOrchestrator:
                             "swing_exit_executed",
                             reason=exit_reason_str,
                             pnl=str(pnl_ex),
-                            balance=str(paper_trader.balance),
+                            balance=str(cached_balance),
                         )
                         has_open_position = False
                         last_entry_price = None
@@ -1152,6 +1343,32 @@ class BotOrchestrator:
                     continue
 
         finally:
+            # --- Graceful shutdown: close open position if any ---
+            if has_open_position and last_position_size and last_entry_price:
+                logger.warning(
+                    "shutdown_closing_position",
+                    market_id=last_market_id,
+                    entry_side=last_entry_side,
+                    size=str(last_position_size),
+                )
+                try:
+                    shutdown_close = asyncio.wait_for(
+                        bridge.submit_order(
+                            market_id=last_market_id or "btc_15m_swing",
+                            token_id=last_token_id or "",
+                            side=OrderSide.SELL,
+                            order_type=OrderType.MARKET,
+                            price=last_tick_yes_price,
+                            size=last_position_size,
+                            strategy_id=self._strategy_name,
+                        ),
+                        timeout=60.0,
+                    )
+                    await shutdown_close
+                    logger.info("shutdown_position_closed")
+                except Exception:
+                    logger.error("shutdown_position_close_failed", exc_info=True)
+
             ws_connected = False
             await ws_feed.disconnect()
             await futures_feed.disconnect()
@@ -1161,7 +1378,7 @@ class BotOrchestrator:
                 await ch_store.disconnect()
             logger.info(
                 "swing_loop_stopped",
-                final_balance=str(paper_trader.balance),
+                final_balance=str(cached_balance),
                 total_trades=trade_count,
                 daily_pnl=str(daily_pnl),
             )

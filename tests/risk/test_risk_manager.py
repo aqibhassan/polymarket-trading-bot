@@ -202,3 +202,63 @@ class TestCheckOrder:
         )
         assert decision.approved is False
         assert "kill switch" in decision.reason
+
+
+class TestBalanceFloor:
+    def test_rejects_below_floor(self) -> None:
+        rm = RiskManager(
+            balance_floor_pct=Decimal("0.50"),
+            initial_balance=Decimal("10000"),
+        )
+        signal = _make_signal()
+        decision = rm.check_order(
+            signal=signal,
+            position_size=Decimal("10"),
+            current_drawdown=Decimal("0"),
+            balance=Decimal("4000"),  # 40% of 10k — below 50% floor
+        )
+        assert decision.approved is False
+        assert "below floor" in decision.reason
+
+    def test_allows_above_floor(self) -> None:
+        rm = RiskManager(
+            balance_floor_pct=Decimal("0.50"),
+            initial_balance=Decimal("10000"),
+        )
+        signal = _make_signal()
+        decision = rm.check_order(
+            signal=signal,
+            position_size=Decimal("10"),
+            current_drawdown=Decimal("0"),
+            balance=Decimal("6000"),  # 60% of 10k — above 50% floor
+        )
+        assert decision.approved is True
+
+    def test_allows_at_exact_floor(self) -> None:
+        rm = RiskManager(
+            balance_floor_pct=Decimal("0.50"),
+            initial_balance=Decimal("10000"),
+        )
+        signal = _make_signal()
+        decision = rm.check_order(
+            signal=signal,
+            position_size=Decimal("10"),
+            current_drawdown=Decimal("0"),
+            balance=Decimal("5000"),  # Exactly at floor
+        )
+        assert decision.approved is True
+
+    def test_disabled_when_zero(self) -> None:
+        """Balance floor is disabled when balance_floor_pct is 0."""
+        rm = RiskManager(
+            balance_floor_pct=Decimal("0"),
+            initial_balance=Decimal("10000"),
+        )
+        signal = _make_signal()
+        decision = rm.check_order(
+            signal=signal,
+            position_size=Decimal("10"),
+            current_drawdown=Decimal("0"),
+            balance=Decimal("10000"),
+        )
+        assert decision.approved is True

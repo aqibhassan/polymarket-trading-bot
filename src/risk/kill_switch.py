@@ -25,16 +25,21 @@ class KillSwitch:
 
     REDIS_KEY = "mvhe:kill_switch"
 
+    CONSECUTIVE_LOSS_KEY = "mvhe:kill_switch:consecutive_losses"
+
     def __init__(
         self,
         max_daily_drawdown_pct: Decimal = Decimal("0.05"),
         redis_client: Any | None = None,
         *,
         async_redis: bool = False,
+        max_consecutive_losses: int = 0,
     ) -> None:
         self._max_daily_drawdown_pct = max_daily_drawdown_pct
         self._redis = redis_client
         self._async_redis = async_redis
+        self._max_consecutive_losses = max_consecutive_losses
+        self._consecutive_losses = 0
         self._state: dict[str, Any] = {
             "active": False,
             "reason": "",
@@ -240,3 +245,104 @@ class KillSwitch:
             "kill_switch_reset",
             previous_reason=previous_reason,
         )
+
+    # ------------------------------------------------------------------
+    # Consecutive loss tracking
+    # ------------------------------------------------------------------
+
+    def record_trade_result(self, *, is_win: bool) -> bool:
+        """Record a trade result and check consecutive loss limit.
+
+        Args:
+            is_win: True if the trade was a winner, False if a loser.
+
+        Returns:
+            True if the kill switch was triggered by consecutive losses.
+        """
+        if is_win:
+            self._consecutive_losses = 0
+            self._sync_save_consecutive_losses()
+            return False
+
+        self._consecutive_losses += 1
+        self._sync_save_consecutive_losses()
+
+        if (
+            self._max_consecutive_losses > 0
+            and self._consecutive_losses >= self._max_consecutive_losses
+        ):
+            reason = (
+                f"consecutive losses {self._consecutive_losses} >= limit "
+                f"{self._max_consecutive_losses}"
+            )
+            self.trigger(reason)
+            return True
+        return False
+
+    async def async_record_trade_result(self, *, is_win: bool) -> bool:
+        """Async version of record_trade_result — persists via async Redis.
+
+        Args:
+            is_win: True if the trade was a winner, False if a loser.
+
+        Returns:
+            True if the kill switch was triggered by consecutive losses.
+        """
+        if is_win:
+            self._consecutive_losses = 0
+            await self._async_save_consecutive_losses()
+            return False
+
+        self._consecutive_losses += 1
+        await self._async_save_consecutive_losses()
+
+        if (
+            self._max_consecutive_losses > 0
+            and self._consecutive_losses >= self._max_consecutive_losses
+        ):
+            reason = (
+                f"consecutive losses {self._consecutive_losses} >= limit "
+                f"{self._max_consecutive_losses}"
+            )
+            await self.async_trigger(reason)
+            return True
+        return False
+
+    @property
+    def consecutive_losses(self) -> int:
+        """Current consecutive loss count."""
+        return self._consecutive_losses
+
+    def _sync_save_consecutive_losses(self) -> None:
+        if self._redis is None or self._async_redis:
+            return
+        try:
+            self._redis.set(self.CONSECUTIVE_LOSS_KEY, str(self._consecutive_losses))
+        except Exception:
+            log.warning("kill_switch_consecutive_loss_save_failed")
+
+    async def _async_save_consecutive_losses(self) -> None:
+        if self._redis is None:
+            return
+        try:
+            await self._redis.set(
+                self.CONSECUTIVE_LOSS_KEY, str(self._consecutive_losses),
+            )
+        except Exception:
+            log.warning("kill_switch_consecutive_loss_save_failed")
+
+    async def async_load_consecutive_losses(self) -> None:
+        """Load consecutive loss count from async Redis."""
+        if self._redis is None:
+            return
+        try:
+            data = await self._redis.get(self.CONSECUTIVE_LOSS_KEY)
+            if data is not None:
+                raw = data if isinstance(data, str) else data.decode()
+                self._consecutive_losses = int(raw)
+                log.info(
+                    "kill_switch_consecutive_losses_loaded",
+                    count=self._consecutive_losses,
+                )
+        except Exception:
+            log.warning("kill_switch_consecutive_loss_load_failed")

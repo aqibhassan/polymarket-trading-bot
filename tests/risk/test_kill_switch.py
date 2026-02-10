@@ -150,3 +150,59 @@ class TestKillSwitchRedis:
         mock_redis.get.return_value = None
         ks = KillSwitch(redis_client=mock_redis)
         assert ks.is_active is False
+
+
+class TestConsecutiveLosses:
+    def test_win_resets_counter(self) -> None:
+        ks = KillSwitch(max_consecutive_losses=3)
+        ks.record_trade_result(is_win=False)
+        ks.record_trade_result(is_win=False)
+        assert ks.consecutive_losses == 2
+        ks.record_trade_result(is_win=True)
+        assert ks.consecutive_losses == 0
+
+    def test_triggers_at_limit(self) -> None:
+        ks = KillSwitch(max_consecutive_losses=3)
+        ks.record_trade_result(is_win=False)
+        ks.record_trade_result(is_win=False)
+        assert ks.is_active is False
+        triggered = ks.record_trade_result(is_win=False)
+        assert triggered is True
+        assert ks.is_active is True
+        assert ks.consecutive_losses == 3
+
+    def test_no_trigger_below_limit(self) -> None:
+        ks = KillSwitch(max_consecutive_losses=5)
+        for _ in range(4):
+            triggered = ks.record_trade_result(is_win=False)
+            assert triggered is False
+        assert ks.is_active is False
+
+    def test_disabled_when_zero(self) -> None:
+        """max_consecutive_losses=0 disables the feature."""
+        ks = KillSwitch(max_consecutive_losses=0)
+        for _ in range(100):
+            triggered = ks.record_trade_result(is_win=False)
+            assert triggered is False
+        assert ks.is_active is False
+
+    def test_win_after_losses_prevents_trigger(self) -> None:
+        ks = KillSwitch(max_consecutive_losses=3)
+        ks.record_trade_result(is_win=False)
+        ks.record_trade_result(is_win=False)
+        ks.record_trade_result(is_win=True)
+        ks.record_trade_result(is_win=False)
+        ks.record_trade_result(is_win=False)
+        assert ks.is_active is False
+        assert ks.consecutive_losses == 2
+
+    def test_persists_to_redis(self) -> None:
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = None
+        ks = KillSwitch(redis_client=mock_redis, max_consecutive_losses=5)
+        ks.record_trade_result(is_win=False)
+        mock_redis.set.assert_called()
+        # Check that the consecutive loss key was persisted
+        calls = [c for c in mock_redis.set.call_args_list
+                 if KillSwitch.CONSECUTIVE_LOSS_KEY in str(c)]
+        assert len(calls) > 0

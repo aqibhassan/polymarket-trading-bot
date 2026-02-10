@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,7 @@ from src.core.logging import get_logger
 if TYPE_CHECKING:
     from decimal import Decimal
 
+    from src.execution.circuit_breaker import CircuitBreaker
     from src.execution.order_manager import OrderManager
     from src.execution.paper_trader import PaperTrader
     from src.execution.polymarket_signer import PolymarketLiveTrader
@@ -45,13 +47,19 @@ class ExecutionBridge:
         paper_trader: PaperTrader | None = None,
         order_manager: OrderManager | None = None,
         live_trader: PolymarketLiveTrader | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
         *,
         skip_confirmation: bool = False,
+        order_timeout_seconds: float = 0,
+        order_max_retries: int = 0,
     ) -> None:
         self._mode = mode
         self._paper_trader = paper_trader
         self._order_manager = order_manager
         self._live_trader = live_trader
+        self._circuit_breaker = circuit_breaker
+        self._order_timeout = order_timeout_seconds
+        self._order_max_retries = order_max_retries
 
         if mode == "paper" and paper_trader is None:
             msg = "paper_trader required when mode='paper'"
@@ -92,9 +100,88 @@ class ExecutionBridge:
         size: Decimal,
         strategy_id: str = "",
     ) -> Order:
-        return await self._backend().submit_order(
-            market_id, token_id, side, order_type, price, size, strategy_id,
+        # Circuit breaker gate
+        if self._circuit_breaker is not None and not self._circuit_breaker.can_execute():
+            from src.models.order import Order as OrderModel
+            from src.models.order import OrderStatus
+
+            logger.warning("bridge_circuit_breaker_open", market_id=market_id)
+            rejected = OrderModel(
+                market_id=market_id,
+                token_id=token_id,
+                side=side,
+                order_type=order_type,
+                price=price,
+                size=size,
+                strategy_id=strategy_id,
+                status=OrderStatus.REJECTED,
+            )
+            return rejected
+
+        last_error: Exception | None = None
+        attempts = 1 + self._order_max_retries
+
+        for attempt in range(attempts):
+            try:
+                if self._order_timeout > 0:
+                    order = await asyncio.wait_for(
+                        self._backend().submit_order(
+                            market_id, token_id, side, order_type, price, size, strategy_id,
+                        ),
+                        timeout=self._order_timeout,
+                    )
+                else:
+                    order = await self._backend().submit_order(
+                        market_id, token_id, side, order_type, price, size, strategy_id,
+                    )
+
+                if self._circuit_breaker is not None:
+                    self._circuit_breaker.record_success()
+                return order
+
+            except TimeoutError as exc:
+                last_error = exc
+                logger.warning(
+                    "bridge_order_timeout",
+                    attempt=attempt + 1,
+                    max_attempts=attempts,
+                    timeout=self._order_timeout,
+                    market_id=market_id,
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "bridge_order_failed",
+                    attempt=attempt + 1,
+                    max_attempts=attempts,
+                    error=str(exc),
+                    market_id=market_id,
+                )
+
+        # All retries exhausted — record failure and return rejected order
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.record_failure()
+
+        from src.models.order import Order as OrderModel
+        from src.models.order import OrderStatus
+
+        logger.error(
+            "bridge_order_all_retries_exhausted",
+            market_id=market_id,
+            attempts=attempts,
+            last_error=str(last_error),
         )
+        rejected = OrderModel(
+            market_id=market_id,
+            token_id=token_id,
+            side=side,
+            order_type=order_type,
+            price=price,
+            size=size,
+            strategy_id=strategy_id,
+            status=OrderStatus.REJECTED,
+        )
+        return rejected
 
     async def cancel_order(self, order_id: str) -> bool:
         return await self._backend().cancel_order(order_id)
