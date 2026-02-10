@@ -89,7 +89,6 @@ export interface SignalActivityEvent {
   confidence: number;
   votes: Record<string, number>;
   detail: string;
-  has_position?: boolean;
 }
 
 export interface BotState {

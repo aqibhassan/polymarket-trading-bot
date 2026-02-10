@@ -36,14 +36,25 @@ function coerceRows<T>(rows: T[], numericFields?: Set<string>): T[] {
   });
 }
 
-export async function getRecentTrades(limit: number = 10, strategy?: string): Promise<Trade[]> {
+export async function getRecentTrades(limit: number = 10, strategy?: string, offset: number = 0): Promise<Trade[]> {
   const where = strategy ? `WHERE strategy = {strategy:String}` : '';
   const result = await clickhouse.query({
-    query: `SELECT * FROM mvhe.trades ${where} ORDER BY entry_time DESC LIMIT {limit:UInt32}`,
-    query_params: { limit, ...(strategy ? { strategy } : {}) },
+    query: `SELECT * FROM mvhe.trades ${where} ORDER BY entry_time DESC LIMIT {limit:UInt32} OFFSET {offset:UInt32}`,
+    query_params: { limit, offset, ...(strategy ? { strategy } : {}) },
     format: 'JSONEachRow',
   });
   return coerceRows(await result.json<Trade>());
+}
+
+export async function getTradeCount(strategy?: string): Promise<number> {
+  const where = strategy ? `WHERE strategy = {strategy:String}` : '';
+  const result = await clickhouse.query({
+    query: `SELECT count() AS cnt FROM mvhe.trades ${where}`,
+    query_params: strategy ? { strategy } : {},
+    format: 'JSONEachRow',
+  });
+  const rows = await result.json<{ cnt: string }>();
+  return rows.length > 0 ? Number(rows[0].cnt) : 0;
 }
 
 export async function getTradesInRange(start: string, end: string, strategy?: string): Promise<Trade[]> {

@@ -27,7 +27,7 @@ function safeNum(v: unknown): number {
 
 export default function OverviewPage() {
   const { state, connected } = useBotState();
-  const { trades } = useTrades(10, 10000);
+  const { trades, page: tradePage, totalPages: tradeTotalPages, setPage: setTradePage } = useTrades(10, 10000);
   const [equityData, setEquityData] = useState<Array<{ time: string; cumulative_pnl: number }>>([]);
   const [killSwitch, setKillSwitch] = useState(false);
   // ClickHouse fallback for daily stats when Redis is empty/stale
@@ -229,7 +229,7 @@ export default function OverviewPage() {
           <CardTitle className="text-sm font-medium text-zinc-400">Recent Trades</CardTitle>
         </CardHeader>
         <CardContent>
-          <TradesTable trades={trades} />
+          <TradesTable trades={trades} page={tradePage} totalPages={tradeTotalPages} onPageChange={setTradePage} />
         </CardContent>
       </Card>
     </div>

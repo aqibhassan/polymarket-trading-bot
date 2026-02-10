@@ -464,6 +464,8 @@ class BotOrchestrator:
         last_market_id: str | None = None
         last_reset_date = datetime.now(tz=UTC).date()
         last_signal_details_str: str = ""
+        window_activity_published = False  # one event per 15-min window
+        window_last_skip_eval: dict[str, Any] = {}  # accumulate last skip reason
 
         logger.info(
             "swing_loop_started",
@@ -612,9 +614,34 @@ class BotOrchestrator:
                     last_token_id = None
                     last_market_id = None
 
+                    # Publish window summary if bot didn't trade this window
+                    if not window_activity_published and window_last_skip_eval:
+                        try:
+                            import uuid as _uuid_mod
+                            summary_event = {
+                                "id": str(_uuid_mod.uuid4())[:8],
+                                "timestamp": datetime.now(tz=UTC).isoformat(),
+                                "minute": window_last_skip_eval.get("minute", 0),
+                                "market_id": window_last_skip_eval.get("market_id", ""),
+                                "outcome": "skip",
+                                "reason": window_last_skip_eval.get("reason", ""),
+                                "direction": window_last_skip_eval.get("direction", ""),
+                                "confidence": window_last_skip_eval.get("confidence", 0),
+                                "votes": window_last_skip_eval.get("votes", {}),
+                                "detail": window_last_skip_eval.get("detail", ""),
+                            }
+                            await cache.push_to_list(
+                                "bot:signal_activity", summary_event,
+                                max_length=20, ttl=600,
+                            )
+                        except Exception:
+                            logger.debug("signal_activity_window_summary_failed", exc_info=True)
+
                     window_candles = []
                     window_open_price = None
                     current_window_start = None
+                    window_activity_published = False
+                    window_last_skip_eval = {}
 
                 # --- First candle in a new window ---
                 if current_window_start is None:
@@ -817,31 +844,15 @@ class BotOrchestrator:
                 except Exception:
                     logger.debug("signal_publish_failed", exc_info=True)
 
-                # Publish signal activity feed (skip/entry events only)
+                # Accumulate signal activity (one event per window)
                 try:
                     last_eval = getattr(self._strategy, '_last_evaluation', {})
                     eval_outcome = last_eval.get("outcome")
-                    if eval_outcome in ("skip", "entry"):
-                        import uuid
-                        activity_event = {
-                            "id": str(uuid.uuid4())[:8],
-                            "timestamp": datetime.now(tz=UTC).isoformat(),
-                            "minute": last_eval.get("minute", minute_in_window),
-                            "market_id": last_eval.get("market_id", ""),
-                            "outcome": eval_outcome,
-                            "reason": last_eval.get("reason", ""),
-                            "direction": last_eval.get("direction", ""),
-                            "confidence": last_eval.get("confidence", 0),
-                            "votes": last_eval.get("votes", {}),
-                            "detail": last_eval.get("detail", ""),
-                            "has_position": has_open_position,
-                        }
-                        await cache.push_to_list(
-                            "bot:signal_activity", activity_event,
-                            max_length=20, ttl=600,
-                        )
+                    if eval_outcome == "skip" and not window_activity_published:
+                        # Keep updating the last skip reason — published at window end
+                        window_last_skip_eval = dict(last_eval)
                 except Exception:
-                    logger.debug("signal_activity_publish_failed", exc_info=True)
+                    logger.debug("signal_activity_accumulate_failed", exc_info=True)
 
                 for sig in signals:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position:
@@ -977,6 +988,29 @@ class BotOrchestrator:
                                 est_fee=str(costs.fee_cost),
                                 balance=str(paper_trader.balance),
                             )
+                            # Publish ENTRY event immediately (one per window)
+                            if not window_activity_published:
+                                try:
+                                    import uuid as _uuid_entry
+                                    entry_event = {
+                                        "id": str(_uuid_entry.uuid4())[:8],
+                                        "timestamp": datetime.now(tz=UTC).isoformat(),
+                                        "minute": minute_in_window,
+                                        "market_id": market_id,
+                                        "outcome": "entry",
+                                        "reason": "entry_signal",
+                                        "direction": sig.direction.value,
+                                        "confidence": last_confidence,
+                                        "votes": last_eval.get("votes", {}) if last_eval.get("outcome") == "entry" else {},
+                                        "detail": f"Kelly={sizing.kelly_fraction}, size={position_size}",
+                                    }
+                                    await cache.push_to_list(
+                                        "bot:signal_activity", entry_event,
+                                        max_length=20, ttl=600,
+                                    )
+                                    window_activity_published = True
+                                except Exception:
+                                    logger.debug("signal_activity_entry_publish_failed", exc_info=True)
                         else:
                             logger.info(
                                 "swing_entry_rejected",

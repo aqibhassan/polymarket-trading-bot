@@ -27,7 +27,11 @@ function safeNum(v: unknown): number {
 export default function PerformancePage() {
   const [perf, setPerf] = useState<StrategyPerformance | null>(null);
   const [equityData, setEquityData] = useState<Array<{ time: string; cumulative_pnl: number }>>([]);
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const [allTrades, setAllTrades] = useState<Trade[]>([]);  // for charts
+  const [trades, setTrades] = useState<Trade[]>([]);        // for table (paginated)
+  const [tradeTotal, setTradeTotal] = useState(0);
+  const [tradePage, setTradePage] = useState(1);
+  const TRADES_PER_PAGE = 20;
   const [advancedMetrics, setAdvancedMetrics] = useState<AdvancedMetrics | null>(null);
   const [signalCombos, setSignalCombos] = useState<SignalComboWinRate[]>([]);
   const [strategy, setStrategy] = useState('singularity');
@@ -47,22 +51,27 @@ export default function PerformancePage() {
   useEffect(() => {
     const fetchAll = async () => {
       try {
-        const [perfRes, equityRes, tradesRes, metricsRes, combosRes] = await Promise.all([
+        const tradeOffset = (tradePage - 1) * TRADES_PER_PAGE;
+        const [perfRes, equityRes, allTradesRes, pageTradesRes, metricsRes, combosRes] = await Promise.all([
           fetch(`/api/performance?strategy=${strategy}`),
           fetch(`/api/equity-curve?strategy=${strategy}`),
-          fetch(`/api/trades?limit=100&strategy=${strategy}`),
+          fetch(`/api/trades?limit=1000&strategy=${strategy}`),
+          fetch(`/api/trades?limit=${TRADES_PER_PAGE}&offset=${tradeOffset}&strategy=${strategy}`),
           fetch(`/api/metrics?strategy=${strategy}`),
           fetch(`/api/signal-combos?strategy=${strategy}`),
         ]);
         const perfData = await perfRes.json();
         const equityJson = await equityRes.json();
-        const tradesData = await tradesRes.json();
+        const allTradesData = await allTradesRes.json();
+        const pageTradesData = await pageTradesRes.json();
         const metricsData = await metricsRes.json();
         const combosData = await combosRes.json();
 
         setPerf(perfData);
         setEquityData(equityJson.data || []);
-        setTrades(tradesData.trades || []);
+        setAllTrades(allTradesData.trades || []);
+        setTrades(pageTradesData.trades || []);
+        setTradeTotal(pageTradesData.total ?? 0);
         setAdvancedMetrics(metricsData.total_trades ? metricsData : null);
         setSignalCombos(combosData.combos || []);
       } catch { /* fetch failed */ }
@@ -71,15 +80,15 @@ export default function PerformancePage() {
     fetchAll();
     const interval = setInterval(fetchAll, 10000);
     return () => clearInterval(interval);
-  }, [strategy]);
+  }, [strategy, tradePage]);
 
   const winRate = perf && safeNum(perf.trade_count) > 0
     ? ((safeNum(perf.win_count) / safeNum(perf.trade_count)) * 100).toFixed(1)
     : '—';
 
-  // Build daily P&L bar chart data from trades
+  // Build daily P&L bar chart data from all trades (not paginated)
   const dailyPnlMap = new Map<string, number>();
-  for (const t of trades) {
+  for (const t of allTrades) {
     const day = (t.entry_time || '').split(/[T ]/)[0];
     if (!day) continue;
     dailyPnlMap.set(day, (dailyPnlMap.get(day) || 0) + safeNum(t.pnl));
@@ -88,9 +97,9 @@ export default function PerformancePage() {
     .map(([date, pnl]) => ({ date, pnl: Number(pnl.toFixed(2)) }))
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  // Win rate by entry minute
+  // Win rate by entry minute (from all trades)
   const minuteWins = new Map<number, { wins: number; total: number }>();
-  for (const t of trades) {
+  for (const t of allTrades) {
     const m = t.window_minute ?? 0;
     const entry = minuteWins.get(m) || { wins: 0, total: 0 };
     entry.total++;
@@ -200,7 +209,12 @@ export default function PerformancePage() {
           <CardTitle className="text-sm font-medium text-zinc-400">Trade History</CardTitle>
         </CardHeader>
         <CardContent>
-          <TradesTable trades={trades} />
+          <TradesTable
+            trades={trades}
+            page={tradePage}
+            totalPages={Math.max(1, Math.ceil(tradeTotal / TRADES_PER_PAGE))}
+            onPageChange={setTradePage}
+          />
         </CardContent>
       </Card>
     </div>

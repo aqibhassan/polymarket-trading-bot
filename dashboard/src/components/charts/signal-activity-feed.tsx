@@ -28,18 +28,6 @@ function timeAgo(ts: string): string {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
-/** Derive display label: actual outcome vs re-evaluation while in position */
-function outcomeLabel(evt: SignalActivityEvent): { text: string; style: string } {
-  if (evt.has_position) {
-    // Re-evaluation while already holding a position
-    return { text: 'HELD', style: 'border-blue-600 text-blue-400' };
-  }
-  if (evt.outcome === 'entry') {
-    return { text: 'ENTRY', style: '' }; // uses variant="success"
-  }
-  return { text: 'SKIP', style: 'border-amber-600 text-amber-400' };
-}
-
 export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
   const [feed, setFeed] = useState<SignalActivityEvent[]>([]);
   const seenIds = useRef(new Set<string>());
@@ -73,27 +61,24 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
         {feed.length === 0 ? (
           <div className="flex items-center justify-center h-24 border-2 border-dashed border-zinc-800 rounded-lg">
             <p className="text-sm text-zinc-500 text-center px-4">
-              No signal evaluations yet — Activity appears during entry windows (min 6-10)
+              No signal evaluations yet — one result per 15-minute window
             </p>
           </div>
         ) : (
           <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
             {feed.map((evt) => {
-              const label = outcomeLabel(evt);
-              const dimmed = evt.has_position;
+              const isEntry = evt.outcome === 'entry';
               return (
                 <div
                   key={evt.id}
-                  className={`flex items-center justify-between rounded-md border p-2 ${
-                    dimmed ? 'border-zinc-800/50 opacity-60' : 'border-zinc-800'
-                  }`}
+                  className="flex items-center justify-between rounded-md border border-zinc-800 p-2"
                 >
                   <div className="flex items-center gap-2">
                     <Badge
-                      variant={!evt.has_position && evt.outcome === 'entry' ? 'success' : 'outline'}
-                      className={`text-xs ${label.style}`}
+                      variant={isEntry ? 'success' : 'outline'}
+                      className={`text-xs ${isEntry ? '' : 'border-amber-600 text-amber-400'}`}
                     >
-                      {label.text}
+                      {isEntry ? 'ENTRY' : 'SKIP'}
                     </Badge>
                     {evt.direction && (
                       <Badge
@@ -104,11 +89,7 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
                       </Badge>
                     )}
                     <span className="text-xs text-zinc-500">
-                      {evt.has_position
-                        ? evt.outcome === 'entry'
-                          ? 'Signal confirmed (in position)'
-                          : `${REASON_LABELS[evt.reason] || evt.reason} (in position)`
-                        : REASON_LABELS[evt.reason] || evt.reason}
+                      {REASON_LABELS[evt.reason] || evt.reason}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-right">
