@@ -845,6 +845,7 @@ class BotOrchestrator:
                     logger.debug("signal_publish_failed", exc_info=True)
 
                 # Accumulate signal activity (one event per window)
+                last_eval: dict[str, Any] = {}
                 try:
                     last_eval = getattr(self._strategy, '_last_evaluation', {})
                     eval_outcome = last_eval.get("outcome")

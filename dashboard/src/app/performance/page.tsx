@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BarChart,
   Bar,
@@ -48,39 +48,52 @@ export default function PerformancePage() {
     detect();
   }, []);
 
+  // Fetch chart/summary data (depends on strategy only, not page)
   useEffect(() => {
-    const fetchAll = async () => {
+    const fetchCharts = async () => {
       try {
-        const tradeOffset = (tradePage - 1) * TRADES_PER_PAGE;
-        const [perfRes, equityRes, allTradesRes, pageTradesRes, metricsRes, combosRes] = await Promise.all([
+        const [perfRes, equityRes, allTradesRes, metricsRes, combosRes] = await Promise.all([
           fetch(`/api/performance?strategy=${strategy}`),
           fetch(`/api/equity-curve?strategy=${strategy}`),
           fetch(`/api/trades?limit=1000&strategy=${strategy}`),
-          fetch(`/api/trades?limit=${TRADES_PER_PAGE}&offset=${tradeOffset}&strategy=${strategy}`),
           fetch(`/api/metrics?strategy=${strategy}`),
           fetch(`/api/signal-combos?strategy=${strategy}`),
         ]);
         const perfData = await perfRes.json();
         const equityJson = await equityRes.json();
         const allTradesData = await allTradesRes.json();
-        const pageTradesData = await pageTradesRes.json();
         const metricsData = await metricsRes.json();
         const combosData = await combosRes.json();
 
         setPerf(perfData);
         setEquityData(equityJson.data || []);
         setAllTrades(allTradesData.trades || []);
-        setTrades(pageTradesData.trades || []);
-        setTradeTotal(pageTradesData.total ?? 0);
+        setTradeTotal(allTradesData.total ?? 0);
         setAdvancedMetrics(metricsData.total_trades ? metricsData : null);
         setSignalCombos(combosData.combos || []);
       } catch { /* fetch failed */ }
     };
 
-    fetchAll();
-    const interval = setInterval(fetchAll, 10000);
+    fetchCharts();
+    const interval = setInterval(fetchCharts, 10000);
     return () => clearInterval(interval);
+  }, [strategy]);
+
+  // Fetch paginated table data (depends on strategy + page)
+  const fetchPagedTrades = useCallback(async () => {
+    try {
+      const tradeOffset = (tradePage - 1) * TRADES_PER_PAGE;
+      const res = await fetch(`/api/trades?limit=${TRADES_PER_PAGE}&offset=${tradeOffset}&strategy=${strategy}`);
+      const data = await res.json();
+      setTrades(data.trades || []);
+    } catch { /* fetch failed */ }
   }, [strategy, tradePage]);
+
+  useEffect(() => {
+    fetchPagedTrades();
+    const interval = setInterval(fetchPagedTrades, 10000);
+    return () => clearInterval(interval);
+  }, [fetchPagedTrades]);
 
   const winRate = perf && safeNum(perf.trade_count) > 0
     ? ((safeNum(perf.win_count) / safeNum(perf.trade_count)) * 100).toFixed(1)
