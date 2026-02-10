@@ -13,10 +13,16 @@ import { SizingCard } from '@/components/charts/sizing-card';
 import { TradesTable } from '@/components/charts/trades-table';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { DollarSign, TrendingUp, Trophy, BarChart3 } from 'lucide-react';
-import type { DailyPnl } from '@/lib/types/trade';
+import { DollarSign, TrendingUp, Trophy, BarChart3, Activity } from 'lucide-react';
+import type { DailyPnl, StrategyPerformance } from '@/lib/types/trade';
 
 const INITIAL_BALANCE = 10000;
+
+/** Safe Number conversion — returns 0 for null/undefined/NaN */
+function safeNum(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 export default function OverviewPage() {
   const { state, connected } = useBotState();
@@ -26,6 +32,14 @@ export default function OverviewPage() {
   // ClickHouse fallback for daily stats when Redis is empty/stale
   const [chDaily, setChDaily] = useState<DailyPnl | null>(null);
   const [chTotalPnl, setChTotalPnl] = useState<number>(0);
+  // Total performance from ClickHouse (all-time stats)
+  const [totalPerf, setTotalPerf] = useState<StrategyPerformance | null>(null);
+  const [strategy, setStrategy] = useState('singularity');
+
+  // Detect strategy from heartbeat SSE
+  useEffect(() => {
+    if (state.heartbeat?.strategy) setStrategy(state.heartbeat.strategy);
+  }, [state.heartbeat?.strategy]);
 
   const fetchClickhouseFallback = useCallback(async () => {
     try {
@@ -55,7 +69,14 @@ export default function OverviewPage() {
         setChTotalPnl(Number(curve[curve.length - 1].cumulative_pnl));
       }
     } catch { /* ignore */ }
-  }, []);
+
+    // Total performance (all-time) from ClickHouse
+    try {
+      const perfRes = await fetch(`/api/performance?strategy=${strategy}`);
+      const perfData = await perfRes.json();
+      if (perfData.trade_count) setTotalPerf(perfData);
+    } catch { /* ignore */ }
+  }, [strategy]);
 
   useEffect(() => {
     const fetchKillSwitch = async () => {
@@ -110,32 +131,69 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {/* Stat Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          title="Balance"
-          value={`$${displayBalance.toFixed(2)}`}
-          trend={pnlTrend}
-          trendValue={`${displayPnlPct >= 0 ? '+' : ''}${displayPnlPct.toFixed(2)}%`}
-          icon={<DollarSign className="h-4 w-4" />}
-        />
-        <StatCard
-          title="Daily P&L"
-          value={`$${dailyPnl.toFixed(2)}`}
-          trend={dailyPnl >= 0 ? 'up' : 'down'}
-          icon={<TrendingUp className="h-4 w-4" />}
-        />
-        <StatCard
-          title="Win Rate"
-          value={winRate !== '—' ? `${winRate}%` : '—'}
-          subtitle={`${winCount}W / ${lossCount}L`}
-          icon={<Trophy className="h-4 w-4" />}
-        />
-        <StatCard
-          title="Trades Today"
-          value={tradeCount}
-          icon={<BarChart3 className="h-4 w-4" />}
-        />
+      {/* All Time Stats */}
+      <div>
+        <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">All Time</p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            title="Balance"
+            value={`$${displayBalance.toFixed(2)}`}
+            trend={pnlTrend}
+            trendValue={`${displayPnlPct >= 0 ? '+' : ''}${displayPnlPct.toFixed(2)}%`}
+            icon={<DollarSign className="h-4 w-4" />}
+          />
+          <StatCard
+            title="Total P&L"
+            value={`$${displayPnl.toFixed(2)}`}
+            trend={pnlTrend}
+            icon={<TrendingUp className="h-4 w-4" />}
+          />
+          <StatCard
+            title="Win Rate"
+            value={totalPerf && safeNum(totalPerf.trade_count) > 0
+              ? `${((safeNum(totalPerf.win_count) / safeNum(totalPerf.trade_count)) * 100).toFixed(1)}%`
+              : '—'}
+            subtitle={totalPerf ? `${safeNum(totalPerf.win_count)}W / ${safeNum(totalPerf.trade_count) - safeNum(totalPerf.win_count)}L` : ''}
+            icon={<Trophy className="h-4 w-4" />}
+          />
+          <StatCard
+            title="Total Trades"
+            value={totalPerf ? safeNum(totalPerf.trade_count) : 0}
+            icon={<BarChart3 className="h-4 w-4" />}
+          />
+        </div>
+      </div>
+
+      {/* Today Stats */}
+      <div>
+        <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Today</p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            title="Daily P&L"
+            value={`$${dailyPnl.toFixed(2)}`}
+            trend={dailyPnl >= 0 ? 'up' : 'down'}
+            icon={<TrendingUp className="h-4 w-4" />}
+          />
+          <StatCard
+            title="Win Rate (Today)"
+            value={winRate !== '—' ? `${winRate}%` : '—'}
+            subtitle={`${winCount}W / ${lossCount}L`}
+            icon={<Trophy className="h-4 w-4" />}
+          />
+          <StatCard
+            title="Trades Today"
+            value={tradeCount}
+            icon={<BarChart3 className="h-4 w-4" />}
+          />
+          <StatCard
+            title="Avg Trade"
+            value={totalPerf && safeNum(totalPerf.trade_count) > 0
+              ? `$${safeNum(totalPerf.avg_pnl).toFixed(2)}`
+              : '—'}
+            trend={totalPerf && safeNum(totalPerf.avg_pnl) >= 0 ? 'up' : 'down'}
+            icon={<Activity className="h-4 w-4" />}
+          />
+        </div>
       </div>
 
       {/* Market State Panel — full width */}
