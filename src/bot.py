@@ -817,6 +817,31 @@ class BotOrchestrator:
                 except Exception:
                     logger.debug("signal_publish_failed", exc_info=True)
 
+                # Publish signal activity feed (skip/entry events only)
+                try:
+                    last_eval = getattr(self._strategy, '_last_evaluation', {})
+                    eval_outcome = last_eval.get("outcome")
+                    if eval_outcome in ("skip", "entry"):
+                        import uuid
+                        activity_event = {
+                            "id": str(uuid.uuid4())[:8],
+                            "timestamp": datetime.now(tz=UTC).isoformat(),
+                            "minute": last_eval.get("minute", minute_in_window),
+                            "market_id": last_eval.get("market_id", ""),
+                            "outcome": eval_outcome,
+                            "reason": last_eval.get("reason", ""),
+                            "direction": last_eval.get("direction", ""),
+                            "confidence": last_eval.get("confidence", 0),
+                            "votes": last_eval.get("votes", {}),
+                            "detail": last_eval.get("detail", ""),
+                        }
+                        await cache.push_to_list(
+                            "bot:signal_activity", activity_event,
+                            max_length=20, ttl=600,
+                        )
+                except Exception:
+                    logger.debug("signal_activity_publish_failed", exc_info=True)
+
                 for sig in signals:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position:
                         entry_price = sig.entry_price or yes_price

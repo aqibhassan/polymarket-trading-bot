@@ -10,6 +10,7 @@ import type {
   LastTrade,
   SignalBreakdown,
   SizingDetails,
+  SignalActivityEvent,
 } from '../types/bot-state';
 
 async function getKey<T>(key: string): Promise<T | null> {
@@ -58,13 +59,25 @@ export async function getSizing(): Promise<SizingDetails | null> {
   return getKey<SizingDetails>('bot:sizing');
 }
 
+export async function getSignalActivity(): Promise<SignalActivityEvent[]> {
+  const raw = await redis.lrange('mvhe:bot:signal_activity', 0, 19);
+  if (!raw || raw.length === 0) return [];
+  return raw.map((item) => {
+    try {
+      return JSON.parse(item) as SignalActivityEvent;
+    } catch {
+      return null;
+    }
+  }).filter((x): x is SignalActivityEvent => x !== null);
+}
+
 export async function getKillSwitch(): Promise<boolean> {
   const raw = await redis.get('mvhe:kill_switch');
   return raw !== null && raw !== '' && raw !== '0' && raw !== 'false';
 }
 
 export async function getAllBotState(): Promise<BotState> {
-  const [heartbeat, balance, position, window, daily, ws_status, last_trade, signals, sizing] = await Promise.all([
+  const [heartbeat, balance, position, window, daily, ws_status, last_trade, signals, sizing, signal_activity] = await Promise.all([
     getBotHeartbeat(),
     getBotBalance(),
     getBotPosition(),
@@ -74,7 +87,8 @@ export async function getAllBotState(): Promise<BotState> {
     getLastTrade(),
     getSignals(),
     getSizing(),
+    getSignalActivity(),
   ]);
 
-  return { heartbeat, balance, position, window, daily, ws_status, last_trade, signals, sizing };
+  return { heartbeat, balance, position, window, daily, ws_status, last_trade, signals, sizing, signal_activity };
 }

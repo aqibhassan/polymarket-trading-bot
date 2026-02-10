@@ -121,6 +121,7 @@ class SingularityStrategy(BaseStrategy):
         # --- Runtime state ---
         self._entry_minutes: dict[str, int] = {}
         self._entry_votes: dict[str, list[_SignalVote]] = {}
+        self._last_evaluation: dict[str, Any] = {}
 
     def _init_analyzers(self, config: ConfigLoader) -> None:
         """Initialize signal analyzers, gracefully skipping unavailable ones."""
@@ -190,12 +191,15 @@ class SingularityStrategy(BaseStrategy):
 
         # --- Entry pipeline ---
         if minute_in_window < self._entry_minute_start:
+            self._last_evaluation = {"outcome": "outside_window", "reason": "before_entry_window", "minute": minute_in_window, "market_id": market_id}
             return signals
 
         if minute_in_window > self._entry_minute_end:
+            self._last_evaluation = {"outcome": "outside_window", "reason": "after_entry_window", "minute": minute_in_window, "market_id": market_id}
             return signals
 
         if not candles_1m or window_open_price <= 0:
+            self._last_evaluation = {"outcome": "outside_window", "reason": "no_candle_data", "minute": minute_in_window, "market_id": market_id}
             return signals
 
         # --- Collect votes from all signal sources ---
@@ -229,6 +233,7 @@ class SingularityStrategy(BaseStrategy):
             votes.append(time_vote)
 
         if not votes:
+            self._last_evaluation = {"outcome": "skip", "reason": "no_votes", "minute": minute_in_window, "market_id": market_id}
             return signals
 
         # --- Aggregate votes ---
@@ -263,6 +268,12 @@ class SingularityStrategy(BaseStrategy):
                 neutral=len(neutral_votes),
                 required=effective_min,
             )
+            self._last_evaluation = {
+                "outcome": "skip", "reason": "insufficient_agreement",
+                "minute": minute_in_window, "market_id": market_id,
+                "detail": f"YES={yes_count} NO={no_count} neutral={len(neutral_votes)} need={effective_min}",
+                "votes": {"yes": yes_count, "no": no_count, "neutral": len(neutral_votes), "required": effective_min},
+            }
             return signals
 
         # --- Contrarian filter: skip bets against BTC trend ---
@@ -283,6 +294,12 @@ class SingularityStrategy(BaseStrategy):
                     cum_return_pct=round(cum_return_pct, 4),
                     threshold=self._contrarian_threshold_pct,
                 )
+                self._last_evaluation = {
+                    "outcome": "skip", "reason": "contrarian_filter",
+                    "minute": minute_in_window, "market_id": market_id,
+                    "direction": direction_str,
+                    "detail": f"dir={direction_str} cum_return={cum_return_pct:+.4f}% threshold={self._contrarian_threshold_pct}%",
+                }
                 return signals
 
         # --- Compute weighted confidence ---
@@ -304,6 +321,13 @@ class SingularityStrategy(BaseStrategy):
                 confidence=overall_confidence,
                 min_required=self._min_confidence,
             )
+            self._last_evaluation = {
+                "outcome": "skip", "reason": "low_confidence",
+                "minute": minute_in_window, "market_id": market_id,
+                "direction": direction_str,
+                "confidence": round(overall_confidence, 4),
+                "detail": f"confidence={overall_confidence:.4f} < threshold={self._min_confidence}",
+            }
             return signals
 
         # --- All gates passed: generate ENTRY signal ---
@@ -340,6 +364,15 @@ class SingularityStrategy(BaseStrategy):
             liquidity_quality=round(time_vote.strength if time_vote else 0.0, 4),
             overall=round(overall_confidence, 4),
         )
+
+        self._last_evaluation = {
+            "outcome": "entry", "reason": "entry_signal",
+            "minute": minute_in_window, "market_id": market_id,
+            "direction": direction_str,
+            "confidence": round(overall_confidence, 4),
+            "detail": f"{len(agreeing_votes)}/{available_sources} signals agree",
+            "votes": {"yes": yes_count, "no": no_count, "neutral": len(neutral_votes)},
+        }
 
         logger.info(
             "singularity_entry",

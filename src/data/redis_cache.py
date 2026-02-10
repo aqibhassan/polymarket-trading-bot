@@ -89,6 +89,34 @@ class RedisCache:
         r = await self._get_redis()
         await r.delete(self._key(key))
 
+    async def push_to_list(
+        self, key: str, value: Any, max_length: int = 20, ttl: int | None = None,
+    ) -> None:
+        """LPUSH a JSON value and LTRIM to max_length, with optional TTL."""
+        r = await self._get_redis()
+        full_key = self._key(key)
+        serialized = json.dumps(value, default=str)
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.lpush(full_key, serialized)
+            pipe.ltrim(full_key, 0, max_length - 1)
+            if ttl is not None:
+                pipe.expire(full_key, ttl)
+            await pipe.execute()
+
+    async def get_list(
+        self, key: str, start: int = 0, end: int = -1,
+    ) -> list[Any]:
+        """LRANGE with JSON parse for each element."""
+        r = await self._get_redis()
+        raw_items = await r.lrange(self._key(key), start, end)
+        result: list[Any] = []
+        for item in raw_items:
+            try:
+                result.append(json.loads(item))
+            except (json.JSONDecodeError, TypeError):
+                result.append(item)
+        return result
+
     async def get_market_state(self, market_id: str) -> MarketState | None:
         """Get a cached MarketState by market ID."""
         data = await self.get(f"market:{market_id}")

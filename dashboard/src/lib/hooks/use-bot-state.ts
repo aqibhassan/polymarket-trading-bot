@@ -13,6 +13,7 @@ const INITIAL_STATE: BotState = {
   last_trade: null,
   signals: null,
   sizing: null,
+  signal_activity: null,
 };
 
 export function useBotState() {

@@ -7,6 +7,7 @@ import { StatCard } from '@/components/charts/stat-card';
 import { MarketStatePanel } from '@/components/charts/market-state-panel';
 import { SignalPanel } from '@/components/charts/signal-panel';
 import { TradeFeed } from '@/components/charts/trade-feed';
+import { SignalActivityFeed } from '@/components/charts/signal-activity-feed';
 import { EquityCurve } from '@/components/charts/equity-curve';
 import { PositionCard } from '@/components/charts/position-card';
 import { SizingCard } from '@/components/charts/sizing-card';
@@ -204,6 +205,9 @@ export default function OverviewPage() {
         <SignalPanel signals={state.signals} />
         <TradeFeed lastTrade={state.last_trade} activePosition={state.position} />
       </div>
+
+      {/* Signal Activity Feed */}
+      <SignalActivityFeed activity={state.signal_activity} />
 
       {/* Equity Curve + Position + Sizing */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">

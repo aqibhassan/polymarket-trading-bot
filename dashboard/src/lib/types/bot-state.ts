@@ -78,6 +78,19 @@ export interface SizingDetails {
   estimated_win_prob: string;
 }
 
+export interface SignalActivityEvent {
+  id: string;
+  timestamp: string;
+  minute: number;
+  market_id: string;
+  outcome: 'entry' | 'skip';
+  reason: string;
+  direction: string;
+  confidence: number;
+  votes: Record<string, number>;
+  detail: string;
+}
+
 export interface BotState {
   heartbeat: BotHeartbeat | null;
   balance: BotBalance | null;
@@ -88,6 +101,7 @@ export interface BotState {
   last_trade: LastTrade | null;
   signals: SignalBreakdown | null;
   sizing: SizingDetails | null;
+  signal_activity: SignalActivityEvent[] | null;
 }
 
 export interface HealthStatus {
