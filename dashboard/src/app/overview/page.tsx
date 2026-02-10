@@ -75,12 +75,14 @@ export default function OverviewPage() {
     return () => clearInterval(interval);
   }, [fetchClickhouseFallback]);
 
-  // Always use ClickHouse for daily stats — Redis counters reset on bot restart
-  // and may undercount trades. ClickHouse has the full picture.
-  const dailyPnl = chDaily?.total_pnl ?? 0;
-  const tradeCount = chDaily?.trade_count ?? 0;
-  const winCount = chDaily?.win_count ?? 0;
-  const lossCount = tradeCount - winCount;
+  // Prefer ClickHouse daily stats, but fall back to Redis bot daily state
+  // when ClickHouse returns empty (e.g. trades entered yesterday UTC but
+  // the bot session spans midnight).
+  const useRedisDaily = !chDaily && state.daily;
+  const dailyPnl = chDaily?.total_pnl ?? (useRedisDaily ? Number(state.daily!.daily_pnl) || 0 : 0);
+  const tradeCount = chDaily?.trade_count ?? (useRedisDaily ? state.daily!.trade_count : 0);
+  const winCount = chDaily?.win_count ?? (useRedisDaily ? state.daily!.win_count : 0);
+  const lossCount = useRedisDaily ? (state.daily!.loss_count ?? tradeCount - winCount) : tradeCount - winCount;
   const winRate = tradeCount > 0 ? ((winCount / tradeCount) * 100).toFixed(1) : '—';
 
   // Balance: always compute from initial + ClickHouse total PnL for accuracy
@@ -142,7 +144,7 @@ export default function OverviewPage() {
       {/* Signal Panel + Trade Feed */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <SignalPanel signals={state.signals} />
-        <TradeFeed lastTrade={state.last_trade} />
+        <TradeFeed lastTrade={state.last_trade} activePosition={state.position} />
       </div>
 
       {/* Equity Curve + Position + Sizing */}

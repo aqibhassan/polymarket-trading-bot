@@ -38,13 +38,13 @@ export function MetricsGrid({ metrics }: MetricsGridProps) {
       />
       <StatCard
         title="Sharpe Ratio"
-        value={safe(sharpe)}
+        value={sharpe >= 9999 ? '\u221E' : safe(sharpe)}
         trend={sharpe >= 1 ? 'up' : sharpe >= 0 ? 'neutral' : 'down'}
         icon={<Activity className="h-4 w-4" />}
       />
       <StatCard
         title="Sortino Ratio"
-        value={safe(sortino)}
+        value={sortino >= 9999 ? '\u221E' : safe(sortino)}
         trend={sortino >= 1 ? 'up' : sortino >= 0 ? 'neutral' : 'down'}
         icon={<Zap className="h-4 w-4" />}
       />

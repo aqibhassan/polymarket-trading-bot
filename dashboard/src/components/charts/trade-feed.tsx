@@ -3,10 +3,11 @@
 import { useRef, useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import type { LastTrade } from '@/lib/types/bot-state';
+import type { LastTrade, BotPosition } from '@/lib/types/bot-state';
 
 interface TradeFeedProps {
   lastTrade: LastTrade | null;
+  activePosition?: BotPosition | null;
 }
 
 interface FeedEntry extends LastTrade {
@@ -24,7 +25,7 @@ function timeAgo(ts: string): string {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
-export function TradeFeed({ lastTrade }: TradeFeedProps) {
+export function TradeFeed({ lastTrade, activePosition }: TradeFeedProps) {
   const [feed, setFeed] = useState<FeedEntry[]>([]);
   const seenIds = useRef(new Set<string>());
   const initialized = useRef(false);
@@ -72,7 +73,23 @@ export function TradeFeed({ lastTrade }: TradeFeedProps) {
         <CardTitle className="text-sm font-medium text-zinc-400">Live Trade Feed</CardTitle>
       </CardHeader>
       <CardContent>
-        {feed.length === 0 ? (
+        {activePosition && (
+          <div className="flex items-center justify-between rounded-md border border-amber-700/50 bg-amber-900/20 p-2 mb-2 animate-pulse">
+            <div className="flex items-center gap-2">
+              <Badge variant={activePosition.side === 'YES' ? 'success' : 'destructive'} className="text-xs">
+                {activePosition.side}
+              </Badge>
+              <span className="text-xs text-amber-400 font-medium">OPEN</span>
+            </div>
+            <div className="flex items-center gap-3 text-right">
+              <span className="font-mono text-sm text-zinc-300">
+                @{Number(activePosition.entry_price).toFixed(4)}
+              </span>
+              <span className="text-xs text-zinc-500 w-14 text-right">{timeAgo(activePosition.entry_time)}</span>
+            </div>
+          </div>
+        )}
+        {feed.length === 0 && !activePosition ? (
           <div className="flex items-center justify-center h-40 border-2 border-dashed border-zinc-800 rounded-lg">
             <p className="text-sm text-zinc-500">No trades yet</p>
           </div>

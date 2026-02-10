@@ -32,25 +32,16 @@ export default function PerformancePage() {
   const [signalCombos, setSignalCombos] = useState<SignalComboWinRate[]>([]);
   const [strategy, setStrategy] = useState('singularity');
 
-  // Detect active strategy from SSE heartbeat (one-shot)
+  // Detect active strategy from health endpoint (lighter than SSE)
   useEffect(() => {
-    let closed = false;
-    const es = new EventSource('/api/sse');
-    const handler = (event: MessageEvent) => {
+    const detect = async () => {
       try {
-        const parsed = JSON.parse(event.data);
-        if (parsed.type === 'bot-state' && parsed.data?.heartbeat?.strategy) {
-          setStrategy(parsed.data.heartbeat.strategy);
-          closed = true;
-          es.close();
-        }
-      } catch { /* ignore */ }
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        if (data.strategy) setStrategy(data.strategy);
+      } catch { /* use default */ }
     };
-    es.onmessage = handler;
-    es.onerror = () => { if (!closed) { closed = true; es.close(); } };
-    // Close after 5s regardless to prevent leak
-    const timeout = setTimeout(() => { if (!closed) { closed = true; es.close(); } }, 5000);
-    return () => { closed = true; es.close(); clearTimeout(timeout); };
+    detect();
   }, []);
 
   useEffect(() => {

@@ -67,7 +67,7 @@ export function MarketStatePanel({ window }: MarketStatePanelProps) {
             </p>
           </div>
           <div>
-            <p className="text-xs text-zinc-500">Cumulative Return</p>
+            <p className="text-xs text-zinc-500">BTC Window Return</p>
             <p className={`text-xl font-mono font-bold ${cumReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
               {cumReturn >= 0 ? '+' : ''}{cumReturn.toFixed(4)}%
             </p>

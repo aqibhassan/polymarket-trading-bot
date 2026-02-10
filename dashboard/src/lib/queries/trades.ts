@@ -171,9 +171,9 @@ export async function getAdvancedMetrics(strategy: string): Promise<AdvancedMetr
 
   const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
   const stddev = Number(r.pnl_stddev);
-  const sharpe = stddev > 0 ? avgPnl / stddev : 0;
+  const sharpe = stddev > 0 ? avgPnl / stddev : avgPnl > 0 ? Infinity : 0;
   const downsideDev = Number(r.downside_dev);
-  const sortino = downsideDev > 0 ? avgPnl / downsideDev : 0;
+  const sortino = downsideDev > 0 ? avgPnl / downsideDev : avgPnl > 0 ? Infinity : 0;
   const winRate = totalTrades > 0 ? winCount / totalTrades : 0;
   const avgWin = winCount > 0 ? grossProfit / winCount : 0;
   const lossCount = totalTrades - winCount;
@@ -211,8 +211,8 @@ export async function getAdvancedMetrics(strategy: string): Promise<AdvancedMetr
 
   return {
     profit_factor: Number.isFinite(profitFactor) ? Number(profitFactor.toFixed(2)) : 9999,
-    sharpe_ratio: Number(sharpe.toFixed(2)),
-    sortino_ratio: Number(sortino.toFixed(2)),
+    sharpe_ratio: Number.isFinite(sharpe) ? Number(sharpe.toFixed(2)) : 9999,
+    sortino_ratio: Number.isFinite(sortino) ? Number(sortino.toFixed(2)) : 9999,
     max_drawdown_pct: Number((maxDrawdown * 100).toFixed(2)),
     avg_hold_time_minutes: Number(Number(r.avg_hold_time_minutes || 0).toFixed(1)),
     expectancy: Number(expectancy.toFixed(4)),
