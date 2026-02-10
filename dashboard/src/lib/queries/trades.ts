@@ -1,5 +1,5 @@
 import clickhouse from '../db/clickhouse';
-import type { Trade, DailyPnl, StrategyPerformance, AuditEvent, AdvancedMetrics } from '../types/trade';
+import type { Trade, DailyPnl, StrategyPerformance, AuditEvent, AdvancedMetrics, SkipMetrics } from '../types/trade';
 
 // ClickHouse JSONEachRow returns ALL numeric columns as strings.
 // This helper converts known numeric fields to actual numbers so
@@ -248,4 +248,96 @@ export async function getAuditEvents(limit: number = 50): Promise<AuditEvent[]> 
     format: 'JSONEachRow',
   });
   return result.json<AuditEvent>();
+}
+
+export async function getSkipMetrics(strategy: string, days: number = 7): Promise<SkipMetrics> {
+  // Query 1: Summary + reasons breakdown
+  const summaryResult = await clickhouse.query({
+    query: `
+      SELECT outcome, reason, count() as cnt
+      FROM mvhe.signal_evaluations
+      WHERE strategy = {strategy:String}
+        AND timestamp >= now() - INTERVAL {days:UInt32} DAY
+      GROUP BY outcome, reason
+    `,
+    query_params: { strategy, days },
+    format: 'JSONEachRow',
+  });
+  type SummaryRow = { outcome: string; reason: string; cnt: string };
+  const summaryRows = await summaryResult.json<SummaryRow>();
+
+  // Query 2: By minute breakdown
+  const minuteResult = await clickhouse.query({
+    query: `
+      SELECT minute, outcome, count() as cnt
+      FROM mvhe.signal_evaluations
+      WHERE strategy = {strategy:String}
+        AND timestamp >= now() - INTERVAL {days:UInt32} DAY
+      GROUP BY minute, outcome
+      ORDER BY minute
+    `,
+    query_params: { strategy, days },
+    format: 'JSONEachRow',
+  });
+  type MinuteRow = { minute: string; outcome: string; cnt: string };
+  const minuteRows = await minuteResult.json<MinuteRow>();
+
+  // Assemble totals
+  let totalSkips = 0;
+  let totalEntries = 0;
+  const reasonCounts = new Map<string, number>();
+
+  for (const row of summaryRows) {
+    const cnt = Number(row.cnt);
+    if (row.outcome === 'skip') {
+      totalSkips += cnt;
+      reasonCounts.set(row.reason, (reasonCounts.get(row.reason) || 0) + cnt);
+    } else if (row.outcome === 'entry') {
+      totalEntries += cnt;
+    }
+  }
+
+  const totalEvaluations = totalSkips + totalEntries;
+  const skipRate = totalEvaluations > 0 ? (totalSkips / totalEvaluations) * 100 : 0;
+
+  // Build reasons array
+  const reasons = Array.from(reasonCounts.entries())
+    .map(([reason, count]) => ({
+      reason,
+      count,
+      pct: totalSkips > 0 ? Number(((count / totalSkips) * 100).toFixed(1)) : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // Build by_minute array
+  const minuteMap = new Map<number, { skips: number; entries: number }>();
+  for (const row of minuteRows) {
+    const m = Number(row.minute);
+    const entry = minuteMap.get(m) || { skips: 0, entries: 0 };
+    const cnt = Number(row.cnt);
+    if (row.outcome === 'skip') entry.skips += cnt;
+    else if (row.outcome === 'entry') entry.entries += cnt;
+    minuteMap.set(m, entry);
+  }
+
+  const byMinute = Array.from(minuteMap.entries())
+    .map(([minute, { skips, entries }]) => {
+      const total = skips + entries;
+      return {
+        minute,
+        skips,
+        entries,
+        skip_rate: total > 0 ? Number(((skips / total) * 100).toFixed(1)) : 0,
+      };
+    })
+    .sort((a, b) => a.minute - b.minute);
+
+  return {
+    total_evaluations: totalEvaluations,
+    total_skips: totalSkips,
+    total_entries: totalEntries,
+    skip_rate: Number(skipRate.toFixed(1)),
+    reasons,
+    by_minute: byMinute,
+  };
 }

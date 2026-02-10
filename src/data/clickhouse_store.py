@@ -56,6 +56,26 @@ ORDER BY (order_id, timestamp)
 PARTITION BY toYYYYMM(timestamp)
 """
 
+CREATE_SIGNAL_EVALUATIONS = """
+CREATE TABLE IF NOT EXISTS mvhe.signal_evaluations (
+    eval_id String,
+    timestamp DateTime64(3),
+    strategy String,
+    market_id String,
+    minute UInt8,
+    outcome String,
+    reason String,
+    direction String,
+    confidence Float64,
+    votes_yes UInt8,
+    votes_no UInt8,
+    votes_neutral UInt8,
+    detail String
+) ENGINE = MergeTree()
+ORDER BY (strategy, timestamp)
+PARTITION BY toYYYYMM(timestamp)
+"""
+
 CREATE_DAILY_SUMMARY_TABLE = """
 CREATE TABLE IF NOT EXISTS mvhe.daily_summary (
     date Date,
@@ -139,6 +159,7 @@ class ClickHouseStore:
         await asyncio.to_thread(self._client.command, CREATE_TRADES_TABLE)
         await asyncio.to_thread(self._client.command, CREATE_AUDIT_EVENTS_TABLE)
         await asyncio.to_thread(self._client.command, CREATE_DAILY_SUMMARY_TABLE)
+        await asyncio.to_thread(self._client.command, CREATE_SIGNAL_EVALUATIONS)
         # Migration: add signal_details column if missing (idempotent)
         try:
             await asyncio.to_thread(
@@ -226,6 +247,42 @@ class ClickHouseStore:
             column_names=column_names,
         )
         log.debug("clickhouse.audit_event_inserted", event_id=row[0])
+
+    async def insert_signal_evaluation(self, eval_data: dict[str, Any]) -> None:
+        """Insert a signal evaluation record (skip or entry decision).
+
+        Args:
+            eval_data: Dict with keys matching the signal_evaluations table columns.
+        """
+        assert self._client is not None, "Call connect() first"
+        row = [
+            eval_data.get("eval_id", str(uuid.uuid4())),
+            eval_data.get("timestamp", datetime.now(tz=UTC)),
+            eval_data.get("strategy", ""),
+            eval_data.get("market_id", ""),
+            eval_data.get("minute", 0),
+            eval_data.get("outcome", ""),
+            eval_data.get("reason", ""),
+            eval_data.get("direction", ""),
+            float(eval_data.get("confidence", 0.0)),
+            eval_data.get("votes_yes", 0),
+            eval_data.get("votes_no", 0),
+            eval_data.get("votes_neutral", 0),
+            eval_data.get("detail", ""),
+        ]
+        column_names = [
+            "eval_id", "timestamp", "strategy", "market_id",
+            "minute", "outcome", "reason", "direction",
+            "confidence", "votes_yes", "votes_no", "votes_neutral",
+            "detail",
+        ]
+        await asyncio.to_thread(
+            self._client.insert,
+            "mvhe.signal_evaluations",
+            [row],
+            column_names=column_names,
+        )
+        log.debug("clickhouse.signal_evaluation_inserted", eval_id=row[0])
 
     async def get_trades(
         self,

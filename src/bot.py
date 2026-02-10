@@ -632,8 +632,29 @@ class BotOrchestrator:
                             }
                             await cache.push_to_list(
                                 "bot:signal_activity", summary_event,
-                                max_length=20, ttl=600,
+                                max_length=20, ttl=3600,
                             )
+                            # Persist to ClickHouse for historical analysis
+                            if ch_store is not None:
+                                try:
+                                    from datetime import datetime as _dt_parse
+                                    await ch_store.insert_signal_evaluation({
+                                        "eval_id": summary_event["id"],
+                                        "timestamp": _dt_parse.fromisoformat(summary_event["timestamp"]),
+                                        "strategy": self._strategy_name,
+                                        "market_id": summary_event["market_id"],
+                                        "minute": summary_event["minute"],
+                                        "outcome": summary_event["outcome"],
+                                        "reason": summary_event["reason"],
+                                        "direction": summary_event.get("direction", ""),
+                                        "confidence": summary_event.get("confidence", 0),
+                                        "votes_yes": summary_event.get("votes", {}).get("yes", 0),
+                                        "votes_no": summary_event.get("votes", {}).get("no", 0),
+                                        "votes_neutral": summary_event.get("votes", {}).get("neutral", 0),
+                                        "detail": summary_event.get("detail", ""),
+                                    })
+                                except Exception:
+                                    logger.debug("clickhouse_signal_eval_skip_failed", exc_info=True)
                         except Exception:
                             logger.debug("signal_activity_window_summary_failed", exc_info=True)
 
@@ -1002,8 +1023,29 @@ class BotOrchestrator:
                                     }
                                     await cache.push_to_list(
                                         "bot:signal_activity", entry_event,
-                                        max_length=20, ttl=600,
+                                        max_length=20, ttl=3600,
                                     )
+                                    # Persist to ClickHouse for historical analysis
+                                    if ch_store is not None:
+                                        try:
+                                            from datetime import datetime as _dt_parse2
+                                            await ch_store.insert_signal_evaluation({
+                                                "eval_id": entry_event["id"],
+                                                "timestamp": _dt_parse2.fromisoformat(entry_event["timestamp"]),
+                                                "strategy": self._strategy_name,
+                                                "market_id": entry_event["market_id"],
+                                                "minute": entry_event["minute"],
+                                                "outcome": entry_event["outcome"],
+                                                "reason": entry_event["reason"],
+                                                "direction": entry_event.get("direction", ""),
+                                                "confidence": entry_event.get("confidence", 0),
+                                                "votes_yes": entry_event.get("votes", {}).get("yes", 0),
+                                                "votes_no": entry_event.get("votes", {}).get("no", 0),
+                                                "votes_neutral": entry_event.get("votes", {}).get("neutral", 0),
+                                                "detail": entry_event.get("detail", ""),
+                                            })
+                                        except Exception:
+                                            logger.debug("clickhouse_signal_eval_entry_failed", exc_info=True)
                                     window_activity_published = True
                                 except Exception:
                                     logger.debug("signal_activity_entry_publish_failed", exc_info=True)

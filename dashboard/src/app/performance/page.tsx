@@ -14,9 +14,10 @@ import { StatCard } from '@/components/charts/stat-card';
 import { MetricsGrid } from '@/components/charts/metrics-grid';
 import { EquityCurve } from '@/components/charts/equity-curve';
 import { SignalComboChart } from '@/components/charts/signal-combo-chart';
+import { SkipMetricsPanel } from '@/components/charts/skip-metrics-panel';
 import { TradesTable } from '@/components/charts/trades-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { StrategyPerformance, Trade, AdvancedMetrics, SignalComboWinRate } from '@/lib/types/trade';
+import type { StrategyPerformance, Trade, AdvancedMetrics, SignalComboWinRate, SkipMetrics } from '@/lib/types/trade';
 
 /** Safe Number conversion — returns 0 for null/undefined/NaN */
 function safeNum(v: unknown): number {
@@ -34,6 +35,7 @@ export default function PerformancePage() {
   const TRADES_PER_PAGE = 20;
   const [advancedMetrics, setAdvancedMetrics] = useState<AdvancedMetrics | null>(null);
   const [signalCombos, setSignalCombos] = useState<SignalComboWinRate[]>([]);
+  const [skipMetrics, setSkipMetrics] = useState<SkipMetrics | null>(null);
   const [strategy, setStrategy] = useState('singularity');
 
   // Detect active strategy from health endpoint (lighter than SSE)
@@ -52,18 +54,20 @@ export default function PerformancePage() {
   useEffect(() => {
     const fetchCharts = async () => {
       try {
-        const [perfRes, equityRes, allTradesRes, metricsRes, combosRes] = await Promise.all([
+        const [perfRes, equityRes, allTradesRes, metricsRes, combosRes, skipRes] = await Promise.all([
           fetch(`/api/performance?strategy=${strategy}`),
           fetch(`/api/equity-curve?strategy=${strategy}`),
           fetch(`/api/trades?limit=1000&strategy=${strategy}`),
           fetch(`/api/metrics?strategy=${strategy}`),
           fetch(`/api/signal-combos?strategy=${strategy}`),
+          fetch(`/api/skip-metrics?strategy=${strategy}`),
         ]);
         const perfData = await perfRes.json();
         const equityJson = await equityRes.json();
         const allTradesData = await allTradesRes.json();
         const metricsData = await metricsRes.json();
         const combosData = await combosRes.json();
+        const skipData = await skipRes.json();
 
         setPerf(perfData);
         setEquityData(equityJson.data || []);
@@ -71,6 +75,7 @@ export default function PerformancePage() {
         setTradeTotal(allTradesData.total ?? 0);
         setAdvancedMetrics(metricsData.total_trades ? metricsData : null);
         setSignalCombos(combosData.combos || []);
+        setSkipMetrics(skipData.total_evaluations != null ? skipData : null);
       } catch { /* fetch failed */ }
     };
 
@@ -215,6 +220,9 @@ export default function PerformancePage() {
 
       {/* Signal Combo Chart + Table */}
       <SignalComboChart combos={signalCombos} />
+
+      {/* Skip Metrics Analytics */}
+      <SkipMetricsPanel metrics={skipMetrics} />
 
       {/* Trade History */}
       <Card>

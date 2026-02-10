@@ -52,12 +52,35 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
     }
   }, [activity]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Compute summary stats from feed
+  const skipCount = feed.filter((e) => e.outcome === 'skip').length;
+  const entryCount = feed.filter((e) => e.outcome === 'entry').length;
+  const feedTotal = skipCount + entryCount;
+  const feedSkipRate = feedTotal > 0 ? ((skipCount / feedTotal) * 100).toFixed(0) : '0';
+
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium text-zinc-400">Signal Activity</CardTitle>
       </CardHeader>
       <CardContent>
+        {/* Compact summary bar */}
+        {feed.length > 0 && (
+          <div className="flex items-center gap-2 mb-3 text-xs">
+            <span className="text-zinc-500">Recent:</span>
+            <Badge variant="outline" className="border-amber-600 text-amber-400 text-xs">
+              {skipCount} skips
+            </Badge>
+            <span className="text-zinc-600">/</span>
+            <Badge variant="success" className="text-xs">
+              {entryCount} entries
+            </Badge>
+            <span className="text-zinc-500">
+              ({feedSkipRate}% skip rate)
+            </span>
+          </div>
+        )}
+
         {feed.length === 0 ? (
           <div className="flex items-center justify-center h-24 border-2 border-dashed border-zinc-800 rounded-lg">
             <p className="text-sm text-zinc-500 text-center px-4">

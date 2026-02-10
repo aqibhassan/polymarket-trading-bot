@@ -66,3 +66,23 @@ export interface AuditEvent {
   details: string;
   timestamp: string;
 }
+
+export interface SkipReasonBreakdown {
+  reason: string;
+  count: number;
+  pct: number;
+}
+
+export interface SkipMetrics {
+  total_evaluations: number;
+  total_skips: number;
+  total_entries: number;
+  skip_rate: number;
+  reasons: SkipReasonBreakdown[];
+  by_minute: Array<{
+    minute: number;
+    skips: number;
+    entries: number;
+    skip_rate: number;
+  }>;
+}
