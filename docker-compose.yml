@@ -94,6 +94,8 @@ services:
       CLICKHOUSE_PORT: 8123
       TIMESCALEDB_URL: postgresql://mvhe:mvhe_dev@timescaledb:5432/mvhe
       REDIS_URL: redis://redis:6379/0
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-changeme}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production}
     depends_on:
       timescaledb:
         condition: service_healthy

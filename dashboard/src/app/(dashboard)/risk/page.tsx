@@ -78,7 +78,7 @@ export default function RiskPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-zinc-50">Risk Monitor</h1>
+      <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Risk Monitor</h1>
 
       {/* Kill Switch Status */}
       <Card>

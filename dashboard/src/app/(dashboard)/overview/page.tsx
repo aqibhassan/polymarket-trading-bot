@@ -119,7 +119,7 @@ export default function OverviewPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-zinc-50">Live Overview</h1>
+        <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Live Overview</h1>
         <div className="flex items-center gap-3">
           {killSwitch && (
             <Badge variant="destructive" className="animate-pulse text-sm px-3 py-1">

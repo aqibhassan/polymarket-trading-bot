@@ -28,13 +28,13 @@ const trendColors = {
 export function StatCard({ title, value, subtitle, trend, trendValue, icon }: StatCardProps) {
   return (
     <Card>
-      <CardContent className="p-6">
+      <CardContent className="p-4 md:p-6">
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-zinc-400">{title}</p>
           {icon && <div className="text-zinc-500">{icon}</div>}
         </div>
         <div className="mt-2">
-          <p className="text-2xl font-bold text-zinc-50">{value}</p>
+          <p className="text-xl md:text-2xl font-bold text-zinc-50">{value}</p>
         </div>
         {(trend || subtitle) && (
           <div className="mt-1 flex items-center gap-1">

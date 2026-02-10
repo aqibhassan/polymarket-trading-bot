@@ -47,7 +47,7 @@ export function SignalComboChart({ combos }: SignalComboChartProps) {
       <CardContent className="space-y-6">
         {/* Horizontal bar chart */}
         <ResponsiveContainer width="100%" height={Math.max(200, combos.length * 40)}>
-          <BarChart data={combos} layout="vertical" margin={{ left: 120 }}>
+          <BarChart data={combos} layout="vertical" margin={{ left: 80 }}>
             <XAxis type="number" domain={[0, 100]} stroke="#71717a" fontSize={11} tickFormatter={(v: number) => `${v}%`} />
             <YAxis type="category" dataKey="combo" stroke="#71717a" fontSize={10} width={110} />
             <Tooltip

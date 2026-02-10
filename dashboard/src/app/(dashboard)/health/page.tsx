@@ -63,7 +63,7 @@ export default function HealthPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-zinc-50">System Health</h1>
+      <h1 className="text-xl md:text-2xl font-bold text-zinc-50">System Health</h1>
 
       {/* Connection Status Grid */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">

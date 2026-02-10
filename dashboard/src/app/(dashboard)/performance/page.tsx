@@ -138,10 +138,10 @@ export default function PerformancePage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-zinc-50">Performance Analytics</h1>
+      <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Performance Analytics</h1>
 
       {/* Strategy Summary */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard title="Total P&L" value={perf ? `$${safeNum(perf.total_pnl).toFixed(2)}` : '—'} trend={perf && safeNum(perf.total_pnl) >= 0 ? 'up' : 'down'} />
         <StatCard title="Win Rate" value={winRate !== '—' ? `${winRate}%` : '—'} />
         <StatCard title="Best Trade" value={perf ? `$${safeNum(perf.best_trade).toFixed(2)}` : '—'} trend="up" />
