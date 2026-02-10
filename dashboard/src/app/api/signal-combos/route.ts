@@ -4,10 +4,9 @@ import { validStrategy } from '@/lib/validation';
 import type { SignalComboWinRate } from '@/lib/types/trade';
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const strategy = validStrategy(searchParams.get('strategy'));
-
   try {
+    const { searchParams } = new URL(request.url);
+    const strategy = validStrategy(searchParams.get('strategy'));
     const trades = await getTradesWithSignals(strategy);
 
     // Group by active signal combination

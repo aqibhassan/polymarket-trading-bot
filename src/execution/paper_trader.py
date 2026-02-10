@@ -135,13 +135,14 @@ class PaperTrader:
         )
 
         # Track position for buys
-        if (
-            side == OrderSide.BUY and not status.is_terminal
-            or status == OrderStatus.FILLED and side == OrderSide.BUY
+        if side == OrderSide.BUY and (
+            not status.is_terminal or status == OrderStatus.FILLED
         ):
+            # Infer position side from token_id suffix; default to YES
+            pos_side = Side.NO if "no" in token_id.lower() else Side.YES
             self._positions[oid] = Position(
                 market_id=market_id,
-                side=Side.YES,
+                side=pos_side,
                 token_id=token_id,
                 entry_price=fill_price,
                 quantity=fill_size,

@@ -47,7 +47,7 @@ class ConfidenceScorer:
         Returns:
             Confidence model with individual scores and overall.
         """
-        trend_score = trend.strength
+        trend_score = _clamp(trend.strength)
         book_score = _clamp(book_normality)
         liq_score = _clamp(liquidity_quality)
         thresh_score = _clamp(threshold_exceedance)

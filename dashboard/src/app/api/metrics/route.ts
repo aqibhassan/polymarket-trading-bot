@@ -3,10 +3,9 @@ import { getAdvancedMetrics } from '@/lib/queries/trades';
 import { validStrategy } from '@/lib/validation';
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const strategy = validStrategy(searchParams.get('strategy'));
-
   try {
+    const { searchParams } = new URL(request.url);
+    const strategy = validStrategy(searchParams.get('strategy'));
     const metrics = await getAdvancedMetrics(strategy);
     return NextResponse.json(metrics || {});
   } catch (error) {

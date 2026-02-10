@@ -57,11 +57,12 @@ def _apply_env_overrides(config: dict[str, Any], prefix: str = "MVHE") -> dict[s
 
 
 def _coerce_value(value: str) -> Any:
-    """Coerce string env var value to appropriate Python type."""
-    if value.lower() in ("true", "yes", "1"):
-        return True
-    if value.lower() in ("false", "no", "0"):
-        return False
+    """Coerce string env var value to appropriate Python type.
+
+    Numeric conversion is attempted BEFORE boolean to avoid "0"/"1"
+    being interpreted as False/True when they should be integers.
+    """
+    # Try numeric first — "0" and "1" should stay numeric
     try:
         return int(value)
     except ValueError:
@@ -70,6 +71,11 @@ def _coerce_value(value: str) -> Any:
         return float(value)
     except ValueError:
         pass
+    # Boolean keywords (excluding "0" and "1" which are already handled)
+    if value.lower() in ("true", "yes"):
+        return True
+    if value.lower() in ("false", "no"):
+        return False
     return value
 
 

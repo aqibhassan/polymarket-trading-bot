@@ -26,11 +26,7 @@ _READY_FILE = _SENTINEL_DIR / "mvhe_ready"
 _HEARTBEAT_FILE = _SENTINEL_DIR / "mvhe_heartbeat"
 _WS_CONNECTED_FILE = _SENTINEL_DIR / "mvhe_ws_connected"
 
-# Optional engine components — other teams deliver in parallel
-try:
-    from src.engine.exit_manager import ExitManager
-except ImportError:  # pragma: no cover
-    ExitManager = None  # type: ignore[assignment,misc]
+# ExitManager — available but exit logic is handled by strategy/orchestrator
 
 logger = get_logger(__name__)
 
@@ -171,7 +167,13 @@ class BotOrchestrator:
         A positive cumulative return (BTC up) drives YES price higher (green
         candle more likely).  Sensitivity matches the swing backtest default.
         """
-        prob = 1.0 / (1.0 + math.exp(-cum_return / _SIGMOID_SENSITIVITY))
+        try:
+            prob = 1.0 / (1.0 + math.exp(-cum_return / _SIGMOID_SENSITIVITY))
+        except OverflowError:
+            # Extreme negative return → exp overflow → prob approaches 0
+            prob = 0.0 if cum_return < 0 else 1.0
+        # Clamp to avoid degenerate 0.0 / 1.0 prices
+        prob = max(0.01, min(0.99, prob))
         return Decimal(str(round(prob, 6)))
 
     @staticmethod
@@ -553,7 +555,7 @@ class BotOrchestrator:
                         )
                         daily_pnl += pnl_wb
                         portfolio.update_equity(paper_trader.balance)
-                        if pnl_wb > 0:
+                        if pnl_wb >= 0:
                             win_count += 1
                         else:
                             loss_count += 1
@@ -662,9 +664,12 @@ class BotOrchestrator:
                 assert window_open_price is not None
 
                 # Cumulative return from window open
-                cum_return = float(
-                    (latest.close - window_open_price) / window_open_price
-                )
+                if window_open_price == 0:
+                    cum_return = 0.0
+                else:
+                    cum_return = float(
+                        (latest.close - window_open_price) / window_open_price
+                    )
                 yes_price = self._compute_yes_price(cum_return)
                 last_tick_yes_price = yes_price
 

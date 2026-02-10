@@ -112,7 +112,11 @@ export default function PerformancePage() {
       win_rate: total > 0 ? Number(((wins / total) * 100).toFixed(1)) : 0,
       total,
     }))
-    .sort((a, b) => a.minute.localeCompare(b.minute));
+    .sort((a, b) => {
+      const numA = parseInt(a.minute.replace('Min ', ''), 10);
+      const numB = parseInt(b.minute.replace('Min ', ''), 10);
+      return numA - numB;
+    });
 
   return (
     <div className="space-y-6">

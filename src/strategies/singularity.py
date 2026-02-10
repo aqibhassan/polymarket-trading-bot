@@ -322,6 +322,13 @@ class SingularityStrategy(BaseStrategy):
         self._entry_minutes[market_id] = minute_in_window
         self._entry_votes[market_id] = votes
 
+        # Prevent unbounded memory growth: keep only last 200 entries
+        if len(self._entry_minutes) > 200:
+            oldest_keys = list(self._entry_minutes.keys())[:-100]
+            for k in oldest_keys:
+                self._entry_minutes.pop(k, None)
+                self._entry_votes.pop(k, None)
+
         # Build metadata
         vote_summary = ", ".join(
             f"{v.name}={v.direction}({v.strength:.2f})" for v in votes

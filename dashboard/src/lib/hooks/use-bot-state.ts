@@ -23,6 +23,7 @@ export function useBotState() {
     let es: EventSource | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
     let disposed = false;
+    let retryDelay = 1000; // Start at 1s, exponential backoff up to 30s
 
     const connect = () => {
       if (disposed) return;
@@ -32,14 +33,17 @@ export function useBotState() {
       es = new EventSource('/api/sse');
 
       es.onopen = () => {
-        if (!disposed) setConnected(true);
+        if (!disposed) {
+          setConnected(true);
+          retryDelay = 1000; // Reset backoff on successful connect
+        }
       };
 
       es.onmessage = (event) => {
         try {
           const parsed = JSON.parse(event.data);
           if (parsed.type === 'bot-state') {
-            setState(parsed.data);
+            setState(prev => ({ ...prev, ...parsed.data }));
           }
         } catch { /* ignore parse errors */ }
       };
@@ -49,8 +53,9 @@ export function useBotState() {
         setConnected(false);
         es?.close();
         es = null;
-        // Single reconnect — cleared at top of connect() if called again
-        reconnectTimeout = setTimeout(connect, 3000);
+        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 30s max
+        reconnectTimeout = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30000);
       };
     };
 

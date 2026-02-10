@@ -160,14 +160,14 @@ class TestSwingMode:
         assert abs(pos + neg - Decimal("1.0")) < Decimal("0.001")
 
     def test_compute_yes_price_large_positive(self):
-        """Large positive return should approach 1.0."""
+        """Large positive return should be clamped to 0.99."""
         result = BotOrchestrator._compute_yes_price(1.0)
-        assert result > Decimal("0.99")
+        assert result >= Decimal("0.99")
 
     def test_compute_yes_price_large_negative(self):
-        """Large negative return should approach 0.0."""
+        """Large negative return should be clamped to 0.01."""
         result = BotOrchestrator._compute_yes_price(-1.0)
-        assert result < Decimal("0.01")
+        assert result <= Decimal("0.01")
 
     def test_window_start_ts_aligned(self):
         """Timestamps already on 15m boundary should remain unchanged."""

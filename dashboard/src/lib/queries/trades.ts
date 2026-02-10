@@ -14,7 +14,8 @@ function coerceTradeNumerics<T>(row: T): T {
   const out = { ...row } as any;
   for (const key of TRADE_NUMERIC_FIELDS) {
     if (key in out) {
-      out[key] = Number(out[key]);
+      const val = Number(out[key]);
+      out[key] = Number.isFinite(val) ? val : 0;
     }
   }
   return out as T;
@@ -27,7 +28,8 @@ function coerceRows<T>(rows: T[], numericFields?: Set<string>): T[] {
     const out = { ...row } as any;
     for (const key of numericFields) {
       if (key in out) {
-        out[key] = Number(out[key]);
+        const val = Number(out[key]);
+        out[key] = Number.isFinite(val) ? val : 0;
       }
     }
     return out as T;
