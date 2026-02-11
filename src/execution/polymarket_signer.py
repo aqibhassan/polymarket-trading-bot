@@ -219,14 +219,21 @@ class PolymarketLiveTrader:
                 log_order_event("live_rejected", oid, reason=str(error_msg))
                 return order
 
+            # FOK orders are filled entirely or cancelled — if we get an
+            # orderID back, the order was filled. GTC orders sit in the book.
+            is_fok = order_type in (OrderType.FOK,)
+            fill_status = OrderStatus.FILLED if is_fok else OrderStatus.SUBMITTED
             order = order.model_copy(update={
-                "status": OrderStatus.SUBMITTED,
+                "status": fill_status,
                 "exchange_order_id": str(exchange_id),
+                "filled_size": size if is_fok else None,
+                "avg_fill_price": price if is_fok else None,
                 "updated_at": datetime.now(tz=UTC),
             })
             self._orders[oid] = order
+            event_name = "live_filled" if is_fok else "live_submitted"
             log_order_event(
-                "live_submitted", oid,
+                event_name, oid,
                 exchange_order_id=str(exchange_id),
             )
 

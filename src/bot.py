@@ -743,19 +743,29 @@ class BotOrchestrator:
                             exit_price_wb = Decimal("1")  # correct prediction
                         else:
                             exit_price_wb = Decimal("0")  # wrong prediction
-                        # Submit sell to update PaperTrader balance
-                        try:
-                            await bridge.submit_order(
+                        # Submit sell to update PaperTrader balance.
+                        # In live mode, settlement happens on-chain automatically
+                        # (tokens redeem at $1/$0) — skip CLOB sell.
+                        if bridge.mode != "live":
+                            try:
+                                await bridge.submit_order(
+                                    market_id=close_market_id,
+                                    token_id=last_token_id or "",
+                                    side=OrderSide.SELL,
+                                    order_type=OrderType.MARKET,
+                                    price=exit_price_wb,
+                                    size=last_position_size or Decimal("0"),
+                                    strategy_id=self._strategy_name,
+                                )
+                            except Exception:
+                                logger.warning("swing_window_sell_failed", exc_info=True)
+                        else:
+                            logger.info(
+                                "live_settlement_skip_clob_sell",
                                 market_id=close_market_id,
-                                token_id=last_token_id or "",
-                                side=OrderSide.SELL,
-                                order_type=OrderType.MARKET,
-                                price=exit_price_wb,
-                                size=last_position_size or Decimal("0"),
-                                strategy_id=self._strategy_name,
+                                exit_price=str(exit_price_wb),
+                                reason="tokens settle on-chain automatically",
                             )
-                        except Exception:
-                            logger.warning("swing_window_sell_failed", exc_info=True)
                         # P&L with fee deduction (entry + exit)
                         gross_pnl_wb = (exit_price_wb - last_entry_price) * (
                             last_position_size or Decimal("0")
@@ -1219,21 +1229,32 @@ class BotOrchestrator:
                                 if sig.direction == Side.YES
                                 else no_token_id
                             )
+                            # FOK in live mode ensures instant fill-or-reject;
+                            # GTC limit orders can sit unfilled in the book.
+                            live_mode = bridge.mode == "live"
                             entry_order = await bridge.submit_order(
                                 market_id=sig.market_id,
                                 token_id=token_id,
                                 side=OrderSide.BUY,
-                                order_type=OrderType.LIMIT,
+                                order_type=OrderType.FOK if live_mode else OrderType.LIMIT,
                                 price=entry_price,
                                 size=position_size,
                                 strategy_id=sig.strategy_id,
                             )
-                            # Check for rejected orders (circuit breaker, timeout, etc.)
+                            # Check for rejected or unfilled orders
                             if entry_order.status == OrderStatus.REJECTED:
                                 logger.warning(
                                     "entry_order_rejected",
                                     market_id=sig.market_id,
                                     reason="order returned REJECTED status",
+                                )
+                                continue
+                            if entry_order.status == OrderStatus.SUBMITTED:
+                                # GTC order placed but not filled — don't record position
+                                logger.warning(
+                                    "entry_order_not_filled",
+                                    market_id=sig.market_id,
+                                    reason="order SUBMITTED but not FILLED (no matching liquidity)",
                                 )
                                 continue
                             # Use actual filled size (handles partial fills)
@@ -1397,19 +1418,28 @@ class BotOrchestrator:
                             exit_price_ex = Decimal("1")
                         else:
                             exit_price_ex = Decimal("0")
-                        # Submit sell to credit proceeds
-                        try:
-                            await bridge.submit_order(
+                        # Submit sell to credit proceeds (paper only).
+                        # In live mode, settlement is on-chain.
+                        if bridge.mode != "live":
+                            try:
+                                await bridge.submit_order(
+                                    market_id=market_id,
+                                    token_id=last_token_id or "",
+                                    side=OrderSide.SELL,
+                                    order_type=OrderType.MARKET,
+                                    price=exit_price_ex,
+                                    size=last_position_size or Decimal("0"),
+                                    strategy_id=self._strategy_name,
+                                )
+                            except Exception:
+                                logger.warning("swing_exit_sell_failed", exc_info=True)
+                        else:
+                            logger.info(
+                                "live_settlement_skip_clob_sell",
                                 market_id=market_id,
-                                token_id=last_token_id or "",
-                                side=OrderSide.SELL,
-                                order_type=OrderType.MARKET,
-                                price=exit_price_ex,
-                                size=last_position_size or Decimal("0"),
-                                strategy_id=self._strategy_name,
+                                exit_price=str(exit_price_ex),
+                                reason="tokens settle on-chain automatically",
                             )
-                        except Exception:
-                            logger.warning("swing_exit_sell_failed", exc_info=True)
                         # P&L with fee deduction (entry + exit)
                         gross_pnl_ex = (exit_price_ex - (last_entry_price or Decimal("0"))) * (
                             last_position_size or Decimal("0")
