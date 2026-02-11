@@ -1208,13 +1208,15 @@ class BotOrchestrator:
                     window_activity_published = False
                     window_last_skip_eval = {}
                     last_clob_snapshot_minute = -1
-                    # Unsubscribe from old token at window boundary
-                    if current_subscribed_token:
-                        try:
-                            await poly_ws_feed.unsubscribe(current_subscribed_token)
-                        except Exception:
-                            logger.debug("poly_ws_boundary_unsubscribe_failed", exc_info=True)
-                        current_subscribed_token = None
+                    # Unsubscribe from old tokens at window boundary
+                    for _old_tok in (current_subscribed_yes, current_subscribed_no):
+                        if _old_tok:
+                            try:
+                                await poly_ws_feed.unsubscribe(_old_tok)
+                            except Exception:
+                                logger.debug("poly_ws_boundary_unsubscribe_failed", exc_info=True)
+                    current_subscribed_yes = None
+                    current_subscribed_no = None
 
                 # --- First candle in a new window ---
                 if current_window_start is None:
