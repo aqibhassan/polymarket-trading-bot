@@ -42,7 +42,8 @@ export function MarketStatePanel({ window }: MarketStatePanelProps) {
   const btcPrice = Number.isFinite(btcRaw) ? btcRaw : 0;
   const yesRaw = Number(window.yes_price);
   const yesPrice = Number.isFinite(yesRaw) ? yesRaw : 0;
-  const cumReturn = Number.isFinite(window.cum_return_pct) ? window.cum_return_pct : 0;
+  const cumReturnRaw = Number(window.cum_return_pct);
+  const cumReturn = Number.isFinite(cumReturnRaw) ? cumReturnRaw : 0;
 
   return (
     <Card>

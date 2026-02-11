@@ -1,4 +1,5 @@
 import clickhouse from '../db/clickhouse';
+import { getBotBalance } from './bot-state';
 import type { Trade, DailyPnl, StrategyPerformance, AuditEvent, AdvancedMetrics, SkipMetrics } from '../types/trade';
 
 // ClickHouse JSONEachRow returns ALL numeric columns as strings.
@@ -210,7 +211,10 @@ export async function getAdvancedMetrics(strategy: string): Promise<AdvancedMetr
   });
   const eqRows = coerceRows(await eqResult.json<{ cumulative_pnl: number }>(), EQ_NUMERIC);
   // Use equity (initial_balance + cumulative_pnl) to compute drawdown percentage
-  const initialBalance = 10000;
+  // Read real initial_balance from Redis (live mode), fall back to 100 for live
+  const bal = await getBotBalance();
+  const initialBalance = bal?.initial_balance && Number(bal.initial_balance) > 0
+    ? Number(bal.initial_balance) : 100;
   let peakEquity = initialBalance;
   let maxDrawdown = 0;
   for (const row of eqRows) {
