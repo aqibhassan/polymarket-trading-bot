@@ -41,6 +41,14 @@ services:
       timeout: 5s
       retries: 3
 
+  clickhouse:
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
+
   certbot:
     image: certbot/certbot:latest
     volumes:
