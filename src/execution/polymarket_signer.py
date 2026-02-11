@@ -7,6 +7,7 @@ environment variables -- nothing is ever hardcoded.
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -145,6 +146,31 @@ class PolymarketLiveTrader:
     def mode(self) -> str:
         return "live"
 
+    def _fetch_best_ask(self, token_id: str) -> float | None:
+        """Fetch the best ask price from the CLOB order book.
+
+        Returns the lowest ask price (float, 2dp) or None if unavailable.
+        """
+        try:
+            book = self._clob_client.get_order_book(token_id)
+            asks = book.asks if hasattr(book, "asks") else []
+            if not asks:
+                logger.debug("order_book_no_asks", token_id=token_id[:16])
+                return None
+            # asks is a list of OrderBookSummary with .price and .size
+            best = min(asks, key=lambda a: float(a.price))
+            best_price = float(best.price)
+            logger.debug(
+                "order_book_best_ask",
+                token_id=token_id[:16],
+                best_ask=best_price,
+                ask_size=float(best.size),
+            )
+            return best_price
+        except Exception as exc:
+            logger.debug("order_book_fetch_failed", error=str(exc)[:100])
+            return None
+
     async def submit_order(
         self,
         market_id: str,
@@ -188,14 +214,31 @@ class PolymarketLiveTrader:
             #   - taker amount (size): max 4 decimals
             #   - maker amount (price * size): max 2 decimals
             # Size rounded to integer: price(2dp) * size(0dp) <= 2dp always.
-            # BUY: ceil + 10 ticks ($0.10) above market. 15m markets have
-            # wide spreads — GTC at 0.60 gets filled as market moves from
-            # 0.50 toward resolution (0.99). Max 0.65 cap limits downside.
+            #
+            # BUY: fetch best ask from order book and bid at that price to
+            # cross the spread and fill immediately. Fall back to model
+            # price + buffer if book fetch fails.
             # SELL: floor price so ask <= market.
-            import math
             if side == OrderSide.BUY:
-                rounded_price = math.ceil(float(price) * 100) / 100 + 0.10
-                rounded_price = min(rounded_price, 0.65)  # Cap: don't overpay
+                best_ask = self._fetch_best_ask(token_id)
+                if best_ask is not None and best_ask > 0:
+                    # Bid at best ask to cross spread (taker fill)
+                    rounded_price = best_ask
+                    logger.info(
+                        "buy_price_from_book",
+                        best_ask=best_ask,
+                        model_price=float(price),
+                    )
+                else:
+                    # Fallback: model price + buffer
+                    rounded_price = math.ceil(float(price) * 100) / 100 + 0.10
+                    logger.info(
+                        "buy_price_fallback",
+                        rounded_price=rounded_price,
+                        model_price=float(price),
+                    )
+                rounded_price = min(rounded_price, 0.95)  # Safety cap
+                rounded_price = max(rounded_price, 0.01)  # Floor
             else:
                 rounded_price = math.floor(float(price) * 100) / 100
                 rounded_price = max(rounded_price, 0.01)  # Polymarket min
