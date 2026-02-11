@@ -579,6 +579,18 @@ class BotOrchestrator:
                 order_max_retries=order_max_retries,
             )
 
+        # Publish initial balance to Redis so dashboard shows correct
+        # data during the startup sweep (which can block for minutes).
+        try:
+            await cache.set("bot:balance", {
+                "balance": str(initial_balance),
+                "initial_balance": str(initial_balance),
+                "pnl": "0",
+                "pnl_pct": 0.0,
+            }, ttl=600)
+        except Exception:
+            logger.debug("early_balance_publish_failed", exc_info=True)
+
         # Auto-claim redeemer (live mode only)
         redeemer = None
         if self._mode == "live":

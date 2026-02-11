@@ -440,8 +440,8 @@ class PolymarketRedeemer:
                     if not token_id:
                         continue
                     try:
-                        # Rate limit RPC calls to avoid 429s
-                        await asyncio.sleep(1.5)
+                        # Small delay between RPC calls (Alchemy has high limits)
+                        await asyncio.sleep(0.1)
                         balance = await self._check_ctf_balance(token_id)
                         if balance > 0:
                             logger.info(
@@ -452,7 +452,7 @@ class PolymarketRedeemer:
                                 balance=balance,
                                 question=question,
                             )
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(0.5)
                             tx_hash = await self.redeem_positions(
                                 condition_id=condition_id,
                                 token_id=token_id,
@@ -466,8 +466,8 @@ class PolymarketRedeemer:
                                     token=label,
                                     balance=balance,
                                 )
-                                # Wait for tx confirmation + rate limit
-                                await asyncio.sleep(8)
+                                # Wait for tx confirmation
+                                await asyncio.sleep(3)
                     except Exception as exc:
                         err_str = str(exc)[:100]
                         if "Too many requests" in err_str or "rate limit" in err_str:
@@ -476,7 +476,7 @@ class PolymarketRedeemer:
                                 condition_id=condition_id[:16],
                                 token=label,
                             )
-                            await asyncio.sleep(12)
+                            await asyncio.sleep(5)
                         else:
                             logger.warning(
                                 "sweep.token_check_failed",
