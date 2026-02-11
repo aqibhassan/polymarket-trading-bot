@@ -1232,6 +1232,30 @@ class BotOrchestrator:
                             # FOK in live mode ensures instant fill-or-reject;
                             # GTC limit orders can sit unfilled in the book.
                             live_mode = bridge.mode == "live"
+
+                            # Pre-check: verify target token has ask liquidity
+                            # before wasting a FOK API call on an empty book.
+                            if live_mode and token_id:
+                                try:
+                                    target_book = await scanner.get_market_orderbook(token_id)
+                                    total_ask_size = sum(
+                                        float(a.size) for a in target_book.asks
+                                    )
+                                    if total_ask_size < float(position_size) * 0.5:
+                                        logger.warning(
+                                            "skip_fok_insufficient_book_liquidity",
+                                            market_id=sig.market_id,
+                                            direction=sig.direction.value,
+                                            ask_depth=total_ask_size,
+                                            order_size=float(position_size),
+                                        )
+                                        continue
+                                except Exception:
+                                    logger.debug(
+                                        "book_liquidity_check_failed",
+                                        exc_info=True,
+                                    )
+
                             entry_order = await bridge.submit_order(
                                 market_id=sig.market_id,
                                 token_id=token_id,
