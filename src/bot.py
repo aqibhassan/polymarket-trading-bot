@@ -168,6 +168,7 @@ class BotOrchestrator:
         *,
         market_id: str,
         token_id: str,
+        condition_id: str,
         entry_price: Decimal,
         entry_side: str,
         position_size: Decimal,
@@ -179,6 +180,7 @@ class BotOrchestrator:
         data = _json.dumps({
             "market_id": market_id,
             "token_id": token_id,
+            "condition_id": condition_id,
             "entry_price": str(entry_price),
             "entry_side": entry_side,
             "position_size": str(position_size),
@@ -577,6 +579,19 @@ class BotOrchestrator:
                 order_max_retries=order_max_retries,
             )
 
+        # Auto-claim redeemer (live mode only)
+        redeemer = None
+        if self._mode == "live":
+            try:
+                from src.execution.polymarket_redeemer import PolymarketRedeemer
+                redeemer = PolymarketRedeemer()
+                matic = await redeemer.check_matic_balance()
+                logger.info("redeemer.matic_balance", matic=f"{matic:.4f}")
+                if matic < 0.01:
+                    logger.warning("redeemer.low_matic", matic=f"{matic:.4f}")
+            except Exception:
+                logger.warning("redeemer.init_failed", exc_info=True)
+
         # Portfolio is created AFTER initial_balance is finalized (live or paper)
         # so peak_equity starts at the correct value.
         portfolio = Portfolio()
@@ -636,6 +651,7 @@ class BotOrchestrator:
         last_cum_return_entry: float = 0.0
         last_fee_cost = Decimal("0")
         last_token_id: str | None = None
+        last_condition_id: str | None = None
         pending_gtc_oid: str | None = None  # Exchange OID of resting GTC
         pending_gtc_internal_id: str | None = None
         last_tick_yes_price = Decimal("0.5")
@@ -654,6 +670,7 @@ class BotOrchestrator:
             last_position_size = Decimal(recovered_pos["position_size"])
             last_token_id = recovered_pos.get("token_id")
             last_market_id = recovered_pos.get("market_id")
+            last_condition_id = recovered_pos.get("condition_id")
             last_fee_cost = Decimal(recovered_pos.get("fee_cost", "0"))
             last_entry_time = datetime.now(tz=UTC)
             logger.warning(
@@ -793,8 +810,25 @@ class BotOrchestrator:
                                 "live_settlement_skip_clob_sell",
                                 market_id=close_market_id,
                                 exit_price=str(exit_price_wb),
-                                reason="tokens settle on-chain automatically",
+                                reason="redeeming on-chain via CTF",
                             )
+                            # Auto-claim: redeem settled tokens on-chain
+                            if redeemer is not None and last_condition_id and last_token_id:
+                                try:
+                                    tx_hash = await redeemer.redeem_positions(
+                                        condition_id=last_condition_id,
+                                        token_id=last_token_id,
+                                    )
+                                    if tx_hash:
+                                        logger.info(
+                                            "live_redeem_success",
+                                            tx_hash=tx_hash,
+                                            condition_id=last_condition_id[:16],
+                                        )
+                                        # Wait a moment for balance to update
+                                        await asyncio.sleep(5)
+                                except Exception:
+                                    logger.warning("live_redeem_failed", exc_info=True)
                         # P&L with fee deduction (entry + exit)
                         gross_pnl_wb = (exit_price_wb - last_entry_price) * (
                             last_position_size or Decimal("0")
@@ -881,6 +915,7 @@ class BotOrchestrator:
                     active_market = None
                     last_token_id = None
                     last_market_id = None
+                    last_condition_id = None
 
                     # Publish window summary if bot didn't trade this window
                     if not window_activity_published and window_last_skip_eval:
@@ -1342,6 +1377,7 @@ class BotOrchestrator:
                             last_fee_cost = costs.fee_cost
                             last_token_id = token_id
                             last_market_id = market_id
+                            last_condition_id = active_market.condition_id if active_market else ""
                             last_signal_details_str = last_signal_details
 
                             # Persist position to Redis (survives restart)
@@ -1350,6 +1386,7 @@ class BotOrchestrator:
                                     redis_conn,
                                     market_id=market_id,
                                     token_id=token_id,
+                                    condition_id=last_condition_id or "",
                                     entry_price=actual_fill_price,
                                     entry_side=sig.direction.value,
                                     position_size=actual_fill_size,
@@ -1508,8 +1545,24 @@ class BotOrchestrator:
                                 "live_settlement_skip_clob_sell",
                                 market_id=market_id,
                                 exit_price=str(exit_price_ex),
-                                reason="tokens settle on-chain automatically",
+                                reason="redeeming on-chain via CTF",
                             )
+                            # Auto-claim: redeem settled tokens on-chain
+                            if redeemer is not None and last_condition_id and last_token_id:
+                                try:
+                                    tx_hash = await redeemer.redeem_positions(
+                                        condition_id=last_condition_id,
+                                        token_id=last_token_id,
+                                    )
+                                    if tx_hash:
+                                        logger.info(
+                                            "live_redeem_success",
+                                            tx_hash=tx_hash,
+                                            condition_id=last_condition_id[:16],
+                                        )
+                                        await asyncio.sleep(5)
+                                except Exception:
+                                    logger.warning("live_redeem_failed", exc_info=True)
                         # P&L with fee deduction (entry + exit)
                         gross_pnl_ex = (exit_price_ex - (last_entry_price or Decimal("0"))) * (
                             last_position_size or Decimal("0")
