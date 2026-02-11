@@ -4,7 +4,7 @@
 [risk]
 max_position_pct = 0.05              # 5% — $5/trade at $100 balance (Polymarket min: 5 tokens)
 min_position_pct = 0.03              # 3% floor ensures >5 tokens at $100 balance
-max_daily_drawdown_pct = 0.05        # 5% kill switch
+max_daily_drawdown_pct = 0.15        # 15% kill switch — allows ~3 losses at $100 balance
 min_starting_balance = 10             # Minimum 10 USDC to start live trading
 kelly_multiplier = 0.25              # Quarter-Kelly (matches paper)
 
