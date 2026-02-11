@@ -1779,13 +1779,36 @@ class BotOrchestrator:
                         # FOK price override: use best_ask to cross the spread.
                         # The signer does this too, but we want the correct price
                         # for sizing and max-price validation.
+                        # Fallback: invert the opposite token's best_bid when the
+                        # target token has no WS data (common on illiquid 15m markets).
                         if order_type_selected == OrderType.FOK:
-                            if sig.direction == Side.YES and clob_best_ask is not None:
-                                entry_price = clob_best_ask
-                                price_source = "clob_best_ask_fok"
-                            elif sig.direction == Side.NO and no_clob_best_ask is not None:
-                                entry_price = no_clob_best_ask
-                                price_source = "no_clob_best_ask_fok"
+                            if sig.direction == Side.YES:
+                                _fok_ask = clob_best_ask
+                                if _fok_ask is None and no_clob_best_bid is not None:
+                                    _fok_ask = Decimal("1") - no_clob_best_bid
+                                if _fok_ask is not None:
+                                    entry_price = _fok_ask
+                                    price_source = "clob_best_ask_fok"
+                            elif sig.direction == Side.NO:
+                                _fok_ask = no_clob_best_ask
+                                if _fok_ask is None and clob_best_bid is not None:
+                                    _fok_ask = Decimal("1") - clob_best_bid
+                                if _fok_ask is not None:
+                                    entry_price = _fok_ask
+                                    price_source = "no_clob_best_ask_fok"
+                            # FOK MUST have a real ask to cross; skip if we
+                            # could not determine one from either token.
+                            if price_source not in (
+                                "clob_best_ask_fok",
+                                "no_clob_best_ask_fok",
+                            ):
+                                logger.info(
+                                    "fok_no_real_ask_to_cross",
+                                    price=str(entry_price),
+                                    source=price_source,
+                                    minute=minute_in_window,
+                                )
+                                continue
 
                         logger.debug(
                             "entry_price_source",

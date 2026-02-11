@@ -819,3 +819,125 @@ class TestNODirectionPricing:
             entry = Decimal("0.50")
 
         assert entry == Decimal("0.60")
+
+
+class TestFOKInvertedAskFallback:
+    """Tests for FOK price override using inverted opposite-token bid
+    when the target token has no WS data (the common case on illiquid
+    15m markets where NO token WS is empty)."""
+
+    def _fok_override(
+        self,
+        direction: str,
+        clob_best_ask: Decimal | None,
+        clob_best_bid: Decimal | None,
+        no_clob_best_ask: Decimal | None,
+        no_clob_best_bid: Decimal | None,
+        entry_price: Decimal,
+    ) -> tuple[Decimal, str]:
+        """Replicate the FOK price override logic from bot.py."""
+        price_source = "pre_fok"
+        if direction == "YES":
+            _fok_ask = clob_best_ask
+            if _fok_ask is None and no_clob_best_bid is not None:
+                _fok_ask = Decimal("1") - no_clob_best_bid
+            if _fok_ask is not None:
+                entry_price = _fok_ask
+                price_source = "clob_best_ask_fok"
+        elif direction == "NO":
+            _fok_ask = no_clob_best_ask
+            if _fok_ask is None and clob_best_bid is not None:
+                _fok_ask = Decimal("1") - clob_best_bid
+            if _fok_ask is not None:
+                entry_price = _fok_ask
+                price_source = "no_clob_best_ask_fok"
+        return entry_price, price_source
+
+    def test_no_direction_inverts_yes_bid_when_no_token_empty(self):
+        """NO FOK with empty NO token should invert YES best_bid → NO ask.
+
+        YES bid=0.01 → NO ask = 1 - 0.01 = 0.99.
+        This correctly rejects at max_entry_price=0.85.
+        """
+        price, source = self._fok_override(
+            direction="NO",
+            clob_best_ask=Decimal("0.99"),
+            clob_best_bid=Decimal("0.01"),
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+            entry_price=Decimal("0.50"),
+        )
+        assert price == Decimal("0.99")
+        assert source == "no_clob_best_ask_fok"
+
+    def test_no_direction_uses_real_no_ask_when_available(self):
+        """NO FOK should prefer real NO token ask over inverted YES bid."""
+        price, source = self._fok_override(
+            direction="NO",
+            clob_best_ask=Decimal("0.99"),
+            clob_best_bid=Decimal("0.01"),
+            no_clob_best_ask=Decimal("0.65"),
+            no_clob_best_bid=Decimal("0.55"),
+            entry_price=Decimal("0.50"),
+        )
+        assert price == Decimal("0.65")
+        assert source == "no_clob_best_ask_fok"
+
+    def test_yes_direction_inverts_no_bid_when_yes_token_empty(self):
+        """YES FOK with empty YES token should invert NO best_bid → YES ask."""
+        price, source = self._fok_override(
+            direction="YES",
+            clob_best_ask=None,
+            clob_best_bid=None,
+            no_clob_best_ask=Decimal("0.99"),
+            no_clob_best_bid=Decimal("0.30"),
+            entry_price=Decimal("0.50"),
+        )
+        assert price == Decimal("0.70")
+        assert source == "clob_best_ask_fok"
+
+    def test_yes_direction_uses_real_yes_ask_when_available(self):
+        """YES FOK should prefer real YES token ask."""
+        price, source = self._fok_override(
+            direction="YES",
+            clob_best_ask=Decimal("0.72"),
+            clob_best_bid=Decimal("0.68"),
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+            entry_price=Decimal("0.50"),
+        )
+        assert price == Decimal("0.72")
+        assert source == "clob_best_ask_fok"
+
+    def test_both_tokens_empty_returns_pre_fok_source(self):
+        """If neither token has any data, FOK override should not fire."""
+        price, source = self._fok_override(
+            direction="NO",
+            clob_best_ask=None,
+            clob_best_bid=None,
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+            entry_price=Decimal("0.50"),
+        )
+        assert price == Decimal("0.50")
+        assert source == "pre_fok"  # override did NOT fire
+
+    def test_no_direction_realistic_illiquid_market(self):
+        """Realistic scenario: YES 0.01/0.99 empty book, NO token has no WS data.
+
+        This is the exact bug case. Before the fix, entry_price would stay
+        at $0.50 (clob_computed_mid) and pass fok_max_entry_price ($0.85).
+        After the fix, it becomes $0.99 (inverted) and is correctly rejected.
+        """
+        fok_max_entry_price = Decimal("0.85")
+        price, source = self._fok_override(
+            direction="NO",
+            clob_best_ask=Decimal("0.99"),
+            clob_best_bid=Decimal("0.01"),
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+            entry_price=Decimal("0.50"),
+        )
+        assert price == Decimal("0.99")
+        assert price > fok_max_entry_price  # Would be correctly REJECTED
+        assert source == "no_clob_best_ask_fok"
