@@ -33,6 +33,8 @@ services:
     depends_on:
       - dashboard
       - grafana
+    networks:
+      - frontend
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
