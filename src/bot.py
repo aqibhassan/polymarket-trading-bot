@@ -1244,7 +1244,18 @@ class BotOrchestrator:
                         # Risk gate (include fees in size check)
                         # position_size is SHARES; check_order expects USDC notional
                         notional_usdc = position_size * entry_price
-                        current_drawdown = portfolio.max_drawdown
+                        # Adjust drawdown for pending settlements: winning tokens
+                        # on-chain haven't been credited to USDC balance yet, so
+                        # raw drawdown over-estimates risk.  Add daily_pnl back.
+                        if daily_pnl > 0 and portfolio._peak_equity > 0:
+                            adjusted_equity = cached_balance + daily_pnl
+                            current_drawdown = max(
+                                Decimal("0"),
+                                (portfolio._peak_equity - adjusted_equity)
+                                / portfolio._peak_equity,
+                            )
+                        else:
+                            current_drawdown = portfolio.max_drawdown
                         decision = risk_mgr.check_order(
                             signal=sig,
                             position_size=notional_usdc,
