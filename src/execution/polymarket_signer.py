@@ -183,11 +183,14 @@ class PolymarketLiveTrader:
             # Map side for py-clob-client: "BUY" or "SELL"
             clob_side = "BUY" if side == OrderSide.BUY else "SELL"
 
-            # Polymarket CLOB requires: price max 2 decimals, size max 2 decimals
-            # (maker amount max 2 decimals, taker amount max 4 decimals)
+            # Polymarket CLOB precision constraints:
+            #   - price: max 2 decimals (tick = 0.01)
+            #   - taker amount (size): max 4 decimals
+            #   - maker amount (price * size): max 2 decimals
+            # Rounding size to integer guarantees price(2dp) * size(0dp) <= 2dp.
             import math
             rounded_price = math.floor(float(price) * 100) / 100  # truncate to 2 dp
-            rounded_size = math.floor(float(size) * 100) / 100    # truncate to 2 dp
+            rounded_size = math.floor(float(size))                 # truncate to integer
 
             order_args = _create_order_args(
                 token_id=token_id,
