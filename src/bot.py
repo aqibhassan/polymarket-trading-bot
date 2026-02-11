@@ -966,7 +966,7 @@ class BotOrchestrator:
                             }
                             await cache.push_to_list(
                                 "bot:signal_activity", summary_event,
-                                max_length=20, ttl=3600,
+                                max_length=20, ttl=86400,
                             )
                             # Persist to ClickHouse for historical analysis
                             if ch_store is not None:
@@ -1389,6 +1389,51 @@ class BotOrchestrator:
                                 last_token_id = token_id
                                 last_market_id = market_id
                                 last_signal_details_str = last_signal_details
+
+                                # Publish ENTRY event for GTC orders (same as instant fill)
+                                if not window_activity_published:
+                                    try:
+                                        import uuid as _uuid_gtc
+                                        gtc_entry_event = {
+                                            "id": str(_uuid_gtc.uuid4())[:8],
+                                            "timestamp": datetime.now(tz=UTC).isoformat(),
+                                            "minute": minute_in_window,
+                                            "market_id": sig.market_id,
+                                            "outcome": "entry",
+                                            "reason": "entry_signal",
+                                            "direction": sig.direction.value,
+                                            "confidence": last_confidence,
+                                            "votes": last_eval.get("votes", {}) if last_eval.get("outcome") == "entry" else {},
+                                            "detail": f"GTC resting, Kelly={sizing.kelly_fraction}, size={position_size}",
+                                        }
+                                        await cache.push_to_list(
+                                            "bot:signal_activity", gtc_entry_event,
+                                            max_length=20, ttl=86400,
+                                        )
+                                        if ch_store is not None:
+                                            try:
+                                                from datetime import datetime as _dt_gtc
+                                                await ch_store.insert_signal_evaluation({
+                                                    "eval_id": gtc_entry_event["id"],
+                                                    "timestamp": _dt_gtc.fromisoformat(gtc_entry_event["timestamp"]),
+                                                    "strategy": self._strategy_name,
+                                                    "market_id": gtc_entry_event["market_id"],
+                                                    "minute": gtc_entry_event["minute"],
+                                                    "outcome": gtc_entry_event["outcome"],
+                                                    "reason": gtc_entry_event["reason"],
+                                                    "direction": gtc_entry_event.get("direction", ""),
+                                                    "confidence": gtc_entry_event.get("confidence", 0),
+                                                    "votes_yes": gtc_entry_event.get("votes", {}).get("yes", 0),
+                                                    "votes_no": gtc_entry_event.get("votes", {}).get("no", 0),
+                                                    "votes_neutral": gtc_entry_event.get("votes", {}).get("neutral", 0),
+                                                    "detail": gtc_entry_event.get("detail", ""),
+                                                })
+                                            except Exception:
+                                                logger.debug("clickhouse_signal_eval_gtc_entry_failed", exc_info=True)
+                                        window_activity_published = True
+                                    except Exception:
+                                        logger.debug("signal_activity_gtc_entry_publish_failed", exc_info=True)
+
                                 continue
 
                             elif entry_order.status == OrderStatus.SUBMITTED:
@@ -1489,7 +1534,7 @@ class BotOrchestrator:
                                     }
                                     await cache.push_to_list(
                                         "bot:signal_activity", entry_event,
-                                        max_length=20, ttl=3600,
+                                        max_length=20, ttl=86400,
                                     )
                                     # Persist to ClickHouse for historical analysis
                                     if ch_store is not None:
@@ -1538,7 +1583,7 @@ class BotOrchestrator:
                                 }
                                 await cache.push_to_list(
                                     "bot:signal_activity", reject_event,
-                                    max_length=20, ttl=3600,
+                                    max_length=20, ttl=86400,
                                 )
                                 window_activity_published = True
                             except Exception:
