@@ -11,6 +11,7 @@ services:
       MVHE_LIVE_AUTO_CONFIRM: "true"
       POLYMARKET_PRIVATE_KEY: ${POLYMARKET_PRIVATE_KEY}
       POLYMARKET_FUNDER_ADDRESS: ${POLYMARKET_FUNDER_ADDRESS:-}
+      POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://polygon-rpc.com}
     restart: always
     deploy:
       resources:
