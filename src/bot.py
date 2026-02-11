@@ -1480,26 +1480,36 @@ class BotOrchestrator:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position:
                         sigmoid_price = sig.entry_price or yes_price
 
-                        # Use real CLOB price in ALL modes when available.
-                        # Priority: last_trade > midpoint (tight spread) > best_ask (tight) > sigmoid
-                        entry_price = sigmoid_price  # default fallback
-                        price_source = "sigmoid"
-                        if use_clob_pricing:
-                            clob_spread = (
-                                float(clob_best_ask - clob_best_bid)
-                                if clob_best_ask is not None and clob_best_bid is not None
-                                else 1.0
+                        # ALWAYS use real Polymarket CLOB price — never sigmoid.
+                        # Priority: last_trade > midpoint > REST orderbook midpoint
+                        entry_price: Decimal | None = None
+                        price_source = "none"
+                        if clob_last_trade is not None:
+                            entry_price = clob_last_trade
+                            price_source = "clob_last_trade"
+                        elif clob_midpoint is not None:
+                            entry_price = clob_midpoint
+                            price_source = "clob_midpoint"
+                        elif clob_best_ask is not None and clob_best_bid is not None:
+                            entry_price = (clob_best_ask + clob_best_bid) / 2
+                            price_source = "clob_computed_mid"
+                        elif orderbook.bids and orderbook.asks:
+                            # REST orderbook fallback
+                            entry_price = (orderbook.bids[0].price + orderbook.asks[0].price) / 2
+                            price_source = "rest_orderbook_mid"
+                        elif clob_best_ask is not None:
+                            # Last resort: use best_ask only
+                            entry_price = clob_best_ask
+                            price_source = "clob_best_ask"
+
+                        if entry_price is None or entry_price <= 0:
+                            logger.warning(
+                                "no_real_price_available",
+                                minute=minute_in_window,
+                                sigmoid=str(sigmoid_price),
                             )
-                            if clob_last_trade is not None:
-                                entry_price = clob_last_trade
-                                price_source = "clob_last_trade"
-                            elif clob_midpoint is not None and clob_spread < Decimal("0.50"):
-                                entry_price = clob_midpoint
-                                price_source = "clob_midpoint"
-                            elif clob_best_ask is not None and clob_spread < Decimal("0.50"):
-                                entry_price = clob_best_ask
-                                price_source = "clob_best_ask"
-                            # else: keep sigmoid as fallback for ultra-thin markets
+                            continue  # Skip — no real exchange price
+
                         logger.debug(
                             "entry_price_source",
                             price=str(entry_price),
