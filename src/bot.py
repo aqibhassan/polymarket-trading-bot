@@ -1250,12 +1250,16 @@ class BotOrchestrator:
                                 )
                                 continue
 
-                            # GTC returns SUBMITTED — poll CLOB for fill status.
+                            # GTC returns SUBMITTED — poll CLOB until filled
+                            # or minute 13 (1 min before settlement). This gives
+                            # the market time to move through our price level.
                             if live_mode and entry_order.status == OrderStatus.SUBMITTED:
                                 exchange_oid = entry_order.exchange_order_id
                                 filled = False
-                                for poll_i in range(5):  # Poll up to 5x (15s total)
-                                    await asyncio.sleep(3)
+                                # Poll every 10s until minute 13 (max ~5 min).
+                                max_polls = max(1, (13 - minute_in_window) * 6)
+                                for poll_i in range(max_polls):
+                                    await asyncio.sleep(10)
                                     try:
                                         resp = bridge._live_trader._clob_client.get_order(exchange_oid)
                                         status = resp.get("status", "") if isinstance(resp, dict) else ""
@@ -1266,15 +1270,21 @@ class BotOrchestrator:
                                                 order_id=str(entry_order.id),
                                                 exchange_oid=exchange_oid,
                                                 poll_attempt=poll_i + 1,
+                                                seconds_waited=(poll_i + 1) * 10,
                                             )
                                             break
                                         if status in ("CANCELLED", ""):
-                                            break  # Order gone
+                                            logger.info(
+                                                "gtc_order_gone",
+                                                exchange_oid=exchange_oid,
+                                                status=status,
+                                            )
+                                            break
                                     except Exception:
                                         logger.debug("gtc_poll_failed", exc_info=True)
 
                                 if not filled:
-                                    # Cancel unfilled GTC order
+                                    # Cancel unfilled GTC order before settlement
                                     try:
                                         if bridge._live_trader and exchange_oid:
                                             await bridge._live_trader.cancel_order(
@@ -1286,6 +1296,7 @@ class BotOrchestrator:
                                         "gtc_order_not_filled_cancelled",
                                         market_id=sig.market_id,
                                         exchange_oid=exchange_oid,
+                                        polls=max_polls,
                                     )
                                     continue
 

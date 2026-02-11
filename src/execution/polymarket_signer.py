@@ -188,16 +188,21 @@ class PolymarketLiveTrader:
             #   - taker amount (size): max 4 decimals
             #   - maker amount (price * size): max 2 decimals
             # Size rounded to integer: price(2dp) * size(0dp) <= 2dp always.
-            # BUY: ceil + 2 ticks above market — resting GTC order attracts fills.
+            # BUY: ceil + 10 ticks ($0.10) above market. 15m markets have
+            # wide spreads — GTC at 0.60 gets filled as market moves from
+            # 0.50 toward resolution (0.99). Max 0.65 cap limits downside.
             # SELL: floor price so ask <= market.
             import math
             if side == OrderSide.BUY:
-                rounded_price = math.ceil(float(price) * 100) / 100 + 0.02
-                rounded_price = min(rounded_price, 0.99)  # Polymarket max
+                rounded_price = math.ceil(float(price) * 100) / 100 + 0.10
+                rounded_price = min(rounded_price, 0.65)  # Cap: don't overpay
             else:
                 rounded_price = math.floor(float(price) * 100) / 100
                 rounded_price = max(rounded_price, 0.01)  # Polymarket min
-            rounded_size = math.floor(float(size))  # integer tokens
+            # Keep cost within original budget: size * original_price.
+            original_cost = float(price) * float(size)
+            max_by_cost = math.floor(original_cost / rounded_price) if rounded_price > 0 else 0
+            rounded_size = min(math.floor(float(size)), max_by_cost)  # integer tokens
 
             order_args = _create_order_args(
                 token_id=token_id,
