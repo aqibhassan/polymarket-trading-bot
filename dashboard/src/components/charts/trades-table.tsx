@@ -56,9 +56,11 @@ export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTa
             <TableHead>Time</TableHead>
             <TableHead>Direction</TableHead>
             <TableHead className="text-right">Entry</TableHead>
+            <TableHead className="text-right">CLOB</TableHead>
             <TableHead className="text-right">Exit</TableHead>
             <TableHead className="text-right">Size</TableHead>
             <TableHead className="text-right">P&L</TableHead>
+            <TableHead className="text-right">R:R</TableHead>
             <TableHead>Exit Reason</TableHead>
           </TableRow>
         </TableHeader>
@@ -78,6 +80,11 @@ export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTa
                 <TableCell className="text-right font-mono">
                   ${safeNum(trade.entry_price).toFixed(4)}
                 </TableCell>
+                <TableCell className="text-right font-mono text-zinc-400">
+                  {safeNum(trade.clob_entry_price) > 0
+                    ? `$${safeNum(trade.clob_entry_price).toFixed(4)}`
+                    : '--'}
+                </TableCell>
                 <TableCell className="text-right font-mono">
                   ${safeNum(trade.exit_price).toFixed(4)}
                 </TableCell>
@@ -91,6 +98,11 @@ export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTa
                   )}
                 >
                   {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                </TableCell>
+                <TableCell className="text-right font-mono text-zinc-400">
+                  {safeNum(trade.bet_to_win_ratio) > 0
+                    ? `1:${(1 / safeNum(trade.bet_to_win_ratio)).toFixed(2)}`
+                    : '--'}
                 </TableCell>
                 <TableCell>
                   <Badge variant="secondary">{trade.exit_reason || '--'}</Badge>
