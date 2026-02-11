@@ -188,13 +188,15 @@ class PolymarketLiveTrader:
             #   - taker amount (size): max 4 decimals
             #   - maker amount (price * size): max 2 decimals
             # Size rounded to integer: price(2dp) * size(0dp) <= 2dp always.
-            # BUY: ceil price so bid >= market (FOK fills immediately).
+            # BUY: ceil + 2 ticks so FOK sweeps thin books (fills at best avail).
             # SELL: floor price so ask <= market.
             import math
             if side == OrderSide.BUY:
-                rounded_price = math.ceil(float(price) * 100) / 100
+                rounded_price = math.ceil(float(price) * 100) / 100 + 0.02
+                rounded_price = min(rounded_price, 0.99)  # Polymarket max
             else:
                 rounded_price = math.floor(float(price) * 100) / 100
+                rounded_price = max(rounded_price, 0.01)  # Polymarket min
             rounded_size = math.floor(float(size))  # integer tokens
 
             order_args = _create_order_args(
