@@ -865,28 +865,52 @@ class BotOrchestrator:
                             )
                             # Auto-claim: redeem settled tokens on-chain (only winners)
                             if exit_price_wb == Decimal("1"):
-                                logger.info(
-                                    "live_redeem_check",
-                                    has_redeemer=redeemer is not None,
-                                    condition_id=last_condition_id[:16] if last_condition_id else "none",
-                                    token_id=last_token_id[:16] if last_token_id else "none",
-                                )
                                 if redeemer is not None and last_condition_id and last_token_id:
-                                    try:
-                                        tx_hash = await redeemer.redeem_positions(
-                                            condition_id=last_condition_id,
-                                            token_id=last_token_id,
+                                    # UMA oracle takes 5-15 min to resolve after window close.
+                                    # Schedule background redemption with delay + retries instead
+                                    # of blocking the trading loop with an immediate (likely failing) call.
+                                    _cid = last_condition_id
+                                    _tid = last_token_id
+
+                                    async def _background_redeem(
+                                        r: object, cid: str, tid: str,
+                                    ) -> None:
+                                        delays = [60, 120, 300]  # 1 min, 2 min, 5 min
+                                        for attempt, delay in enumerate(delays):
+                                            await asyncio.sleep(delay)
+                                            try:
+                                                tx = await r.redeem_positions(  # type: ignore[union-attr]
+                                                    condition_id=cid,
+                                                    token_id=tid,
+                                                )
+                                                if tx:
+                                                    logger.info(
+                                                        "live_redeem_success_bg",
+                                                        tx_hash=tx,
+                                                        condition_id=cid[:16],
+                                                        attempt=attempt,
+                                                    )
+                                                    return
+                                            except Exception:
+                                                logger.debug(
+                                                    "live_redeem_retry_failed",
+                                                    attempt=attempt,
+                                                    condition_id=cid[:16],
+                                                    exc_info=True,
+                                                )
+                                        logger.info(
+                                            "live_redeem_deferred_to_sweep",
+                                            condition_id=cid[:16],
+                                            reason="all retries failed, startup sweep will handle",
                                         )
-                                        if tx_hash:
-                                            logger.info(
-                                                "live_redeem_success",
-                                                tx_hash=tx_hash,
-                                                condition_id=last_condition_id[:16],
-                                            )
-                                            # Wait a moment for balance to update
-                                            await asyncio.sleep(5)
-                                    except Exception:
-                                        logger.warning("live_redeem_failed", exc_info=True)
+
+                                    asyncio.create_task(_background_redeem(redeemer, _cid, _tid))
+                                    logger.info(
+                                        "live_redeem_scheduled",
+                                        condition_id=last_condition_id[:16],
+                                        token_id=last_token_id[:16],
+                                        delays="60s,120s,300s",
+                                    )
                             else:
                                 logger.info(
                                     "live_loss_no_redeem",
@@ -1680,27 +1704,49 @@ class BotOrchestrator:
                             )
                             # Auto-claim: redeem settled tokens on-chain (only winners)
                             if exit_price_ex == Decimal("1"):
-                                logger.info(
-                                    "live_redeem_check",
-                                    has_redeemer=redeemer is not None,
-                                    condition_id=last_condition_id[:16] if last_condition_id else "none",
-                                    token_id=last_token_id[:16] if last_token_id else "none",
-                                )
                                 if redeemer is not None and last_condition_id and last_token_id:
-                                    try:
-                                        tx_hash = await redeemer.redeem_positions(
-                                            condition_id=last_condition_id,
-                                            token_id=last_token_id,
+                                    _cid_ex = last_condition_id
+                                    _tid_ex = last_token_id
+
+                                    async def _background_redeem_ex(
+                                        r: object, cid: str, tid: str,
+                                    ) -> None:
+                                        delays = [60, 120, 300]
+                                        for attempt, delay in enumerate(delays):
+                                            await asyncio.sleep(delay)
+                                            try:
+                                                tx = await r.redeem_positions(  # type: ignore[union-attr]
+                                                    condition_id=cid,
+                                                    token_id=tid,
+                                                )
+                                                if tx:
+                                                    logger.info(
+                                                        "live_redeem_success_bg",
+                                                        tx_hash=tx,
+                                                        condition_id=cid[:16],
+                                                        attempt=attempt,
+                                                    )
+                                                    return
+                                            except Exception:
+                                                logger.debug(
+                                                    "live_redeem_retry_failed",
+                                                    attempt=attempt,
+                                                    condition_id=cid[:16],
+                                                    exc_info=True,
+                                                )
+                                        logger.info(
+                                            "live_redeem_deferred_to_sweep",
+                                            condition_id=cid[:16],
+                                            reason="all retries failed, startup sweep will handle",
                                         )
-                                        if tx_hash:
-                                            logger.info(
-                                                "live_redeem_success",
-                                                tx_hash=tx_hash,
-                                                condition_id=last_condition_id[:16],
-                                            )
-                                            await asyncio.sleep(5)
-                                    except Exception:
-                                        logger.warning("live_redeem_failed", exc_info=True)
+
+                                    asyncio.create_task(_background_redeem_ex(redeemer, _cid_ex, _tid_ex))
+                                    logger.info(
+                                        "live_redeem_scheduled",
+                                        condition_id=last_condition_id[:16],
+                                        token_id=last_token_id[:16],
+                                        delays="60s,120s,300s",
+                                    )
                             else:
                                 logger.info(
                                     "live_loss_no_redeem",

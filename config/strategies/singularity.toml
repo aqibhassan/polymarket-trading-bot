@@ -25,8 +25,8 @@ weight_vol = 0.14          # volatility regime
 weight_time = 0.13         # time-of-day (neutral meta-signal)
 
 # --- Entry parameters (RE-OPTIMIZED) ---
-min_signals_agree = 2       # optimized: 2 directional signals required (floor enforced)
-min_confidence = 0.45       # lowered from 0.50: 2 low_confidence skips at 0.35/0.41 (marginal)
+min_signals_agree = 3       # raised for live: require 3+ directional signals for robust consensus
+min_confidence = 0.62       # raised for live: 0.45 let through weak signals (Trade 3 at 0.59 lost)
 entry_minute_start = 8      # universally optimal across all configs
 entry_minute_end = 12       # extended from 11 → 12 (adds high-quality late entries)
 
