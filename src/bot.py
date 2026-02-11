@@ -636,6 +636,8 @@ class BotOrchestrator:
         last_cum_return_entry: float = 0.0
         last_fee_cost = Decimal("0")
         last_token_id: str | None = None
+        pending_gtc_oid: str | None = None  # Exchange OID of resting GTC
+        pending_gtc_internal_id: str | None = None
         last_tick_yes_price = Decimal("0.5")
         last_market_id: str | None = None
         last_reset_date = datetime.now(tz=UTC).date()
@@ -716,6 +718,33 @@ class BotOrchestrator:
 
                 # --- Window boundary transition ---
                 if current_window_start is not None and w_start != current_window_start:
+                    # Check if pending GTC was filled before recording PnL
+                    if pending_gtc_oid and bridge.mode == "live" and bridge._live_trader:
+                        try:
+                            resp = bridge._live_trader._clob_client.get_order(pending_gtc_oid)
+                            gtc_status = resp.get("status", "") if isinstance(resp, dict) else ""
+                            if gtc_status == "MATCHED":
+                                logger.info(
+                                    "gtc_filled_at_settlement",
+                                    exchange_oid=pending_gtc_oid,
+                                )
+                                # Position confirmed — PnL will be calculated below
+                            else:
+                                logger.info(
+                                    "gtc_not_filled_at_settlement",
+                                    exchange_oid=pending_gtc_oid,
+                                    status=gtc_status,
+                                )
+                                # Position never opened — clear tracking
+                                has_open_position = False
+                                trade_count = max(0, trade_count - 1)
+                        except Exception:
+                            logger.debug("gtc_settlement_check_failed", exc_info=True)
+                            has_open_position = False
+                            trade_count = max(0, trade_count - 1)
+                        pending_gtc_oid = None
+                        pending_gtc_internal_id = None
+
                     # Force-close any open position at window end
                     if has_open_position and last_entry_price is not None:
                         close_market_id = last_market_id or (
@@ -1231,7 +1260,9 @@ class BotOrchestrator:
                             )
                             live_mode = bridge.mode == "live"
 
-                            # Live: GTC limit order + poll for fill (up to 15s).
+                            # Live: GTC resting limit order — sits in the book
+                            # until filled or market settles. No cancel needed;
+                            # Polymarket auto-cancels when the market closes.
                             # Paper: instant-fill LIMIT (PaperTrader always fills).
                             entry_order = await bridge.submit_order(
                                 market_id=sig.market_id,
@@ -1250,58 +1281,40 @@ class BotOrchestrator:
                                 )
                                 continue
 
-                            # GTC returns SUBMITTED — poll CLOB until filled
-                            # or minute 13 (1 min before settlement). This gives
-                            # the market time to move through our price level.
+                            # GTC SUBMITTED: order is resting in the book.
+                            # Don't block — let the market come to us. Track
+                            # the pending order; we'll check fill status on
+                            # subsequent ticks and at window boundary.
                             if live_mode and entry_order.status == OrderStatus.SUBMITTED:
-                                exchange_oid = entry_order.exchange_order_id
-                                filled = False
-                                # Poll every 10s until minute 13 (max ~5 min).
-                                max_polls = max(1, (13 - minute_in_window) * 6)
-                                for poll_i in range(max_polls):
-                                    await asyncio.sleep(10)
-                                    try:
-                                        resp = bridge._live_trader._clob_client.get_order(exchange_oid)
-                                        status = resp.get("status", "") if isinstance(resp, dict) else ""
-                                        if status == "MATCHED":
-                                            filled = True
-                                            logger.info(
-                                                "gtc_order_filled",
-                                                order_id=str(entry_order.id),
-                                                exchange_oid=exchange_oid,
-                                                poll_attempt=poll_i + 1,
-                                                seconds_waited=(poll_i + 1) * 10,
-                                            )
-                                            break
-                                        if status in ("CANCELLED", ""):
-                                            logger.info(
-                                                "gtc_order_gone",
-                                                exchange_oid=exchange_oid,
-                                                status=status,
-                                            )
-                                            break
-                                    except Exception:
-                                        logger.debug("gtc_poll_failed", exc_info=True)
-
-                                if not filled:
-                                    # Cancel unfilled GTC order before settlement
-                                    try:
-                                        if bridge._live_trader and exchange_oid:
-                                            await bridge._live_trader.cancel_order(
-                                                str(entry_order.id),
-                                            )
-                                    except Exception:
-                                        logger.debug("gtc_cancel_failed", exc_info=True)
-                                    logger.warning(
-                                        "gtc_order_not_filled_cancelled",
-                                        market_id=sig.market_id,
-                                        exchange_oid=exchange_oid,
-                                        polls=max_polls,
-                                    )
-                                    continue
+                                pending_gtc_oid = entry_order.exchange_order_id
+                                pending_gtc_internal_id = str(entry_order.id)
+                                logger.info(
+                                    "gtc_order_resting",
+                                    market_id=sig.market_id,
+                                    exchange_oid=pending_gtc_oid,
+                                    price=str(entry_price),
+                                    size=str(position_size),
+                                    direction=sig.direction.value,
+                                )
+                                # Optimistically track position details
+                                # (will be confirmed when MATCHED).
+                                has_open_position = True
+                                trade_count += 1
+                                last_entry_price = entry_price
+                                last_entry_side = sig.direction.value
+                                last_entry_time = datetime.now(tz=UTC)
+                                last_position_size = position_size
+                                last_confidence = sig.confidence.overall if sig.confidence else 0.0
+                                last_entry_minute = minute_in_window
+                                last_cum_return_entry = cum_return * 100
+                                last_fee_cost = costs.fee_cost
+                                last_token_id = token_id
+                                last_market_id = market_id
+                                last_signal_details_str = last_signal_details
+                                continue
 
                             elif entry_order.status == OrderStatus.SUBMITTED:
-                                # Paper mode GTC not filled (shouldn't happen)
+                                # Paper mode — shouldn't happen
                                 continue
                             # Use actual filled size (handles partial fills)
                             actual_fill_size = entry_order.filled_size or position_size
