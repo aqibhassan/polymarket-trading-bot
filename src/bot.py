@@ -778,11 +778,25 @@ class BotOrchestrator:
                             resp = bridge._live_trader._clob_client.get_order(pending_gtc_oid)
                             gtc_status = resp.get("status", "") if isinstance(resp, dict) else ""
                             if gtc_status == "MATCHED":
+                                # Extract actual fill size from CLOB response
+                                raw_matched = resp.get("size_matched", resp.get("sizeMatched", "0"))
+                                actual_matched = Decimal(str(raw_matched)) if raw_matched else Decimal("0")
+                                raw_original = resp.get("original_size", resp.get("originalSize", "0"))
+                                original_size = Decimal(str(raw_original)) if raw_original else last_position_size
+                                if actual_matched > 0:
+                                    last_position_size = actual_matched
+                                    # Recalculate fee for actual fill
+                                    actual_notional = actual_matched * last_entry_price
+                                    last_fee_cost = CostCalculator.polymarket_fee(
+                                        actual_notional, last_entry_price,
+                                    )
                                 logger.info(
                                     "gtc_filled_at_settlement",
                                     exchange_oid=pending_gtc_oid,
+                                    requested_size=str(original_size),
+                                    actual_fill=str(actual_matched),
+                                    fill_pct=f"{float(actual_matched / original_size * 100):.1f}%" if original_size > 0 else "N/A",
                                 )
-                                # Position confirmed — PnL will be calculated below
                             else:
                                 logger.info(
                                     "gtc_not_filled_at_settlement",
@@ -1284,6 +1298,20 @@ class BotOrchestrator:
                             )
                             # Convert USD recommendation to shares
                             position_size = sizing.recommended_size / entry_price
+
+                        # Scale position by signal confidence to improve R:R.
+                        # High-confidence trades (0.95) get full size; low-confidence
+                        # trades (0.60) get ~35% size. This means wins (correlated with
+                        # high confidence) are bigger than losses (low confidence).
+                        signal_conf = float(sig.confidence.overall) if sig.confidence else 0.5
+                        conf_factor = max(0.3, min(1.0, (signal_conf - 0.40) / 0.55))
+                        position_size = position_size * Decimal(str(round(conf_factor, 4)))
+                        logger.info(
+                            "confidence_position_scaling",
+                            signal_confidence=round(signal_conf, 4),
+                            confidence_factor=round(conf_factor, 4),
+                            scaled_size=str(position_size),
+                        )
 
                         # Publish sizing details to Redis for dashboard
                         try:
