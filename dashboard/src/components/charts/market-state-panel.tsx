@@ -26,13 +26,13 @@ export function MarketStatePanel({ window }: MarketStatePanelProps) {
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [window?.start_ts, window]);
+  }, [window?.start_ts]);
 
   if (!window) {
     return (
       <Card>
         <CardContent className="p-6 flex items-center justify-center h-32">
-          <p className="text-sm text-zinc-500">Waiting for market window...</p>
+          <p className="text-sm text-zinc-500">Waiting for next BTC 15-minute window...</p>
         </CardContent>
       </Card>
     );
@@ -58,7 +58,7 @@ export function MarketStatePanel({ window }: MarketStatePanelProps) {
           <div>
             <p className="text-xs text-zinc-500">YES Token</p>
             <p className="text-xl font-mono font-bold text-zinc-50">
-              {yesPrice.toFixed(4)}
+              ${yesPrice.toFixed(4)}
             </p>
           </div>
           <div>

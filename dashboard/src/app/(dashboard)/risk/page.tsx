@@ -5,14 +5,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { StatCard } from '@/components/charts/stat-card';
 import { Badge } from '@/components/ui/badge';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { ErrorBanner } from '@/components/ui/error-banner';
 import type { Trade } from '@/lib/types/trade';
-
-const DEFAULT_INITIAL_BALANCE = 10000;
 
 export default function RiskPage() {
   const [killSwitch, setKillSwitch] = useState(false);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [maxDrawdownPct, setMaxDrawdownPct] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -29,23 +29,28 @@ export default function RiskPage() {
       setKillSwitch(ksData.active || false);
       setTrades(trData.trades || []);
 
-      // Use real initial balance from Redis, fallback to default
+      // Use real initial balance from Redis — no hardcoded fallback
       const initBal = balData?.initial_balance && Number(balData.initial_balance) > 0
         ? Number(balData.initial_balance)
-        : DEFAULT_INITIAL_BALANCE;
+        : 0;
 
       // Compute peak-to-trough drawdown from ClickHouse equity curve
       const curve: Array<{ cumulative_pnl: number }> = eqData.data || [];
-      let peak = initBal;
-      let maxDd = 0;
-      for (const pt of curve) {
-        const equity = initBal + Number(pt.cumulative_pnl);
-        if (equity > peak) peak = equity;
-        const dd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
-        if (dd > maxDd) maxDd = dd;
+      if (initBal > 0 && curve.length > 0) {
+        let peak = initBal;
+        let maxDd = 0;
+        for (const pt of curve) {
+          const equity = initBal + Number(pt.cumulative_pnl);
+          if (equity > peak) peak = equity;
+          const dd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+          if (dd > maxDd) maxDd = dd;
+        }
+        setMaxDrawdownPct(Number(maxDd.toFixed(2)));
       }
-      setMaxDrawdownPct(Number(maxDd.toFixed(2)));
-    } catch { /* fetch failed */ }
+      setError(null);
+    } catch {
+      setError('Failed to load risk data');
+    }
   }, []);
 
   useEffect(() => {
@@ -86,6 +91,7 @@ export default function RiskPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Risk Monitor</h1>
+      {error && <ErrorBanner message={error} onRetry={fetchData} />}
 
       {/* Kill Switch Status */}
       <Card>

@@ -3,6 +3,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { formatUTCTime } from '@/lib/format';
 import type { SignalActivityEvent } from '@/lib/types/bot-state';
 
 interface SignalActivityFeedProps {
@@ -15,25 +16,11 @@ const REASON_LABELS: Record<string, string> = {
   contrarian_filter: 'Contrarian filter',
   low_confidence: 'Low confidence',
   entry_signal: 'Entry generated',
+  clob_spread_too_wide: 'CLOB spread too wide',
+  clob_entry_price_too_high: 'CLOB price too high',
+  max_clob_entry_price: 'Price exceeds max',
+  no_clob_price: 'No CLOB price available',
 };
-
-function formatTime(ts: string): string {
-  if (!ts) return '--';
-  const d = new Date(ts);
-  if (isNaN(d.getTime())) return '--';
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-function timeAgo(ts: string): string {
-  if (!ts) return '--';
-  const d = new Date(ts);
-  if (isNaN(d.getTime())) return '--';
-  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
-  if (diff < 0) return 'just now';
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  return `${Math.floor(diff / 3600)}h ago`;
-}
 
 function VoteSummary({ votes }: { votes: Record<string, number> }) {
   const entries = Object.entries(votes);
@@ -162,8 +149,8 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
                       <span className="text-xs text-zinc-500">
                         m{evt.minute}
                       </span>
-                      <span className="text-xs text-zinc-500 w-14 text-right">
-                        {formatTime(evt.timestamp)}
+                      <span className="text-xs text-zinc-500 w-20 text-right">
+                        {formatUTCTime(evt.timestamp)}
                       </span>
                     </div>
                   </div>

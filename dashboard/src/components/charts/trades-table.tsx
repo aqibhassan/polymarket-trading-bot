@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { safeNum, timeAgo } from '@/lib/format';
 import type { Trade } from '@/lib/types/trade';
 
 interface TradesTableProps {
@@ -17,24 +18,6 @@ interface TradesTableProps {
   page?: number;
   totalPages?: number;
   onPageChange?: (page: number) => void;
-}
-
-/** Safe Number conversion — returns 0 for null/undefined/NaN */
-function safeNum(v: unknown): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function formatTime(iso: string): string {
-  if (!iso) return '--';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '--';
-  const now = Date.now();
-  const diff = Math.floor((now - d.getTime()) / 1000);
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTableProps) {
@@ -70,7 +53,7 @@ export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTa
             return (
               <TableRow key={trade.trade_id}>
                 <TableCell className="font-mono text-xs text-zinc-400">
-                  {formatTime(trade.entry_time)}
+                  {timeAgo(trade.entry_time)}
                 </TableCell>
                 <TableCell>
                   <Badge variant={trade.direction === 'YES' ? 'success' : 'destructive'}>
@@ -80,10 +63,10 @@ export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTa
                 <TableCell className="text-right font-mono">
                   ${safeNum(trade.entry_price).toFixed(4)}
                 </TableCell>
-                <TableCell className="text-right font-mono text-zinc-400">
+                <TableCell className="text-right font-mono text-zinc-400" title={safeNum(trade.clob_entry_price) > 0 ? '' : 'No CLOB data available at trade time'}>
                   {safeNum(trade.clob_entry_price) > 0
                     ? `$${safeNum(trade.clob_entry_price).toFixed(4)}`
-                    : '--'}
+                    : 'N/A'}
                 </TableCell>
                 <TableCell className="text-right font-mono">
                   ${safeNum(trade.exit_price).toFixed(4)}
@@ -99,10 +82,10 @@ export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTa
                 >
                   {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
                 </TableCell>
-                <TableCell className="text-right font-mono text-zinc-400">
+                <TableCell className="text-right font-mono text-zinc-400" title={safeNum(trade.bet_to_win_ratio) > 0 ? '' : 'No CLOB data'}>
                   {safeNum(trade.bet_to_win_ratio) > 0
-                    ? `1:${(1 / safeNum(trade.bet_to_win_ratio)).toFixed(2)}`
-                    : '--'}
+                    ? `1:${(1 / safeNum(trade.bet_to_win_ratio)).toFixed(1)}`
+                    : '—'}
                 </TableCell>
                 <TableCell>
                   <Badge variant="secondary">{trade.exit_reason || '--'}</Badge>

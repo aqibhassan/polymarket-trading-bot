@@ -18,6 +18,7 @@ export interface BotPosition {
   entry_price: string;
   size: string;
   entry_time: string;
+  status?: 'filled' | 'gtc_pending';
 }
 
 export interface BotWindow {

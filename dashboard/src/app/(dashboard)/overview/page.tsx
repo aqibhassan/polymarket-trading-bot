@@ -13,17 +13,11 @@ import { PositionCard } from '@/components/charts/position-card';
 import { SizingCard } from '@/components/charts/sizing-card';
 import { TradesTable } from '@/components/charts/trades-table';
 import { Badge } from '@/components/ui/badge';
+import { ErrorBanner } from '@/components/ui/error-banner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DollarSign, TrendingUp, Trophy, BarChart3, Activity } from 'lucide-react';
+import { safeNum } from '@/lib/format';
 import type { DailyPnl, StrategyPerformance } from '@/lib/types/trade';
-
-const DEFAULT_INITIAL_BALANCE = 10000;
-
-/** Safe Number conversion — returns 0 for null/undefined/NaN */
-function safeNum(v: unknown): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
 
 export default function OverviewPage() {
   const { state, connected } = useBotState();
@@ -36,6 +30,7 @@ export default function OverviewPage() {
   // Total performance from ClickHouse (all-time stats)
   const [totalPerf, setTotalPerf] = useState<StrategyPerformance | null>(null);
   const [strategy, setStrategy] = useState('singularity');
+  const [error, setError] = useState<string | null>(null);
 
   // Detect strategy from heartbeat SSE
   useEffect(() => {
@@ -43,13 +38,14 @@ export default function OverviewPage() {
   }, [state.heartbeat?.strategy]);
 
   const fetchClickhouseFallback = useCallback(async () => {
+    let fetchError: string | null = null;
+
     try {
       const today = new Date().toISOString().split('T')[0];
       const res = await fetch(`/api/daily-pnl?date=${today}`);
       const data = await res.json();
       const rows: DailyPnl[] = data.data || [];
       if (rows.length > 0) {
-        // Sum across strategies for totals
         const combined: DailyPnl = {
           strategy: 'all',
           trade_count: rows.reduce((s, r) => s + Number(r.trade_count), 0),
@@ -59,7 +55,9 @@ export default function OverviewPage() {
         };
         setChDaily(combined);
       }
-    } catch { /* ignore */ }
+    } catch {
+      fetchError = 'Failed to load daily stats';
+    }
 
     try {
       const eqRes = await fetch('/api/equity-curve');
@@ -69,14 +67,20 @@ export default function OverviewPage() {
       if (curve.length > 0) {
         setChTotalPnl(Number(curve[curve.length - 1].cumulative_pnl));
       }
-    } catch { /* ignore */ }
+    } catch {
+      fetchError = 'Failed to load equity data';
+    }
 
     // Total performance (all-time) from ClickHouse
     try {
       const perfRes = await fetch(`/api/performance?strategy=${strategy}`);
       const perfData = await perfRes.json();
       if (perfData.trade_count) setTotalPerf(perfData);
-    } catch { /* ignore */ }
+    } catch {
+      fetchError = 'Failed to load performance data';
+    }
+
+    setError(fetchError);
   }, [strategy]);
 
   useEffect(() => {
@@ -107,23 +111,32 @@ export default function OverviewPage() {
   const lossCount = useRedisDaily ? (state.daily!.loss_count ?? tradeCount - winCount) : tradeCount - winCount;
   const winRate = tradeCount > 0 ? ((winCount / tradeCount) * 100).toFixed(1) : '—';
 
-  // Balance: use real balance from Redis (live mode) or fallback to initial + PnL
+  // Balance: use real balance from Redis — no hardcoded fallback
   const redisBalance = state.balance ? Number(state.balance.balance) : null;
   const redisInitial = state.balance ? Number(state.balance.initial_balance) : null;
-  const initialBalance = redisInitial && redisInitial > 0 ? redisInitial : DEFAULT_INITIAL_BALANCE;
+  const hasInitialBalance = redisInitial != null && Number.isFinite(redisInitial) && redisInitial > 0;
+  const initialBalance = hasInitialBalance ? redisInitial : 0;
   const displayBalance = redisBalance != null && Number.isFinite(redisBalance) && redisBalance > 0
     ? redisBalance
-    : initialBalance + chTotalPnl;
+    : hasInitialBalance ? initialBalance + chTotalPnl : null;
   const displayPnl = chTotalPnl;
-  const displayPnlPct = initialBalance > 0 ? (chTotalPnl / initialBalance) * 100 : 0;
+  const displayPnlPct = initialBalance > 0 ? (chTotalPnl / initialBalance) * 100 : null;
 
   const pnlTrend = displayPnl >= 0 ? 'up' as const : 'down' as const;
+  const pnlPctStr = displayPnlPct != null
+    ? `${displayPnlPct >= 0 ? '+' : ''}${displayPnlPct.toFixed(2)}%`
+    : null;
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Live Overview</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Live Overview</h1>
+          <span className="text-xs font-bold px-2 py-0.5 rounded bg-red-500/20 text-red-400 ring-1 ring-red-500/50">
+            LIVE
+          </span>
+        </div>
         <div className="flex items-center gap-3">
           {killSwitch && (
             <Badge variant="destructive" className="animate-pulse text-sm px-3 py-1">
@@ -136,15 +149,17 @@ export default function OverviewPage() {
         </div>
       </div>
 
+      {error && <ErrorBanner message={error} onRetry={fetchClickhouseFallback} />}
+
       {/* All Time Stats */}
       <div>
         <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">All Time</p>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard
             title="Balance"
-            value={`$${displayBalance.toFixed(2)}`}
+            value={displayBalance != null ? `$${displayBalance.toFixed(2)}` : '—'}
             trend={pnlTrend}
-            trendValue={`${displayPnlPct >= 0 ? '+' : ''}${displayPnlPct.toFixed(2)}%`}
+            trendValue={pnlPctStr ?? undefined}
             icon={<DollarSign className="h-4 w-4" />}
           />
           <StatCard

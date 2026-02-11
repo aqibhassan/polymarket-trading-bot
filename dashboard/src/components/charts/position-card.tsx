@@ -2,15 +2,11 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { safeNum, formatUTCDateTime } from '@/lib/format';
 import type { BotPosition } from '@/lib/types/bot-state';
 
 interface PositionCardProps {
   position: BotPosition | null;
-}
-
-function safeNum(v: unknown): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
 }
 
 function timeSince(iso: string): string {
@@ -36,7 +32,12 @@ export function PositionCard({ position }: PositionCardProps) {
               <Badge variant={position.side === 'YES' ? 'success' : 'destructive'}>
                 {position.side}
               </Badge>
-              <span className="text-xs text-zinc-500">{position.market_id}</span>
+              {position.status === 'gtc_pending' && (
+                <Badge variant="outline" className="text-yellow-400 border-yellow-400/50">
+                  GTC Pending
+                </Badge>
+              )}
+              <span className="text-xs text-zinc-500 truncate max-w-[120px]" title={position.market_id}>{position.market_id}</span>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -49,7 +50,7 @@ export function PositionCard({ position }: PositionCardProps) {
               </div>
               <div>
                 <p className="text-xs text-zinc-500">Entry Time</p>
-                <p className="font-mono text-sm text-zinc-200">{new Date(position.entry_time).toLocaleTimeString()}</p>
+                <p className="font-mono text-sm text-zinc-200">{formatUTCDateTime(position.entry_time)}</p>
               </div>
               <div>
                 <p className="text-xs text-zinc-500">Duration</p>

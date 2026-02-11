@@ -72,9 +72,8 @@ export function SignalPanel({ signals }: SignalPanelProps) {
       </CardHeader>
       <CardContent>
         {!hasVotes ? (
-          <div className="flex flex-col items-center justify-center h-40 border-2 border-dashed border-zinc-800 rounded-lg gap-2">
-            <p className="text-sm text-zinc-500">Waiting for entry zone</p>
-            <p className="text-xs text-zinc-600">Signals appear at minute 8-12</p>
+          <div className="flex items-center justify-center h-40 border-2 border-dashed border-zinc-800 rounded-lg">
+            <p className="text-sm text-zinc-500">Waiting for entry zone (minute 8-12 of 15)</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -89,7 +88,9 @@ export function SignalPanel({ signals }: SignalPanelProps) {
                   {directionBadge(signals.direction)}
                 </div>
                 <span className="text-sm font-mono font-bold text-zinc-200">
-                  {((signals.overall_confidence ?? 0) * 100).toFixed(1)}%
+                  {signals.overall_confidence != null && signals.overall_confidence > 0
+                    ? `${(signals.overall_confidence * 100).toFixed(1)}%`
+                    : '—'}
                 </span>
               </div>
               {signals.entry_generated && (

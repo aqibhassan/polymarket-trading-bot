@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 
 const navItems = [
-  { href: '/overview', label: 'Live Overview', icon: LayoutDashboard },
+  { href: '/overview', label: 'Overview', icon: LayoutDashboard },
   { href: '/performance', label: 'Performance', icon: TrendingUp },
   { href: '/risk', label: 'Risk Monitor', icon: Shield },
   { href: '/health', label: 'System Health', icon: Activity },
@@ -50,9 +50,14 @@ export function Sidebar({ open, onClose }: SidebarProps) {
       >
         <div className="p-5 border-b border-zinc-800 flex items-center justify-between">
           <div>
-            <h1 className="text-emerald-500 font-bold text-xl tracking-tight">
-              MVHE
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-emerald-500 font-bold text-xl tracking-tight">
+                MVHE
+              </h1>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 ring-1 ring-red-500/50">
+                LIVE
+              </span>
+            </div>
             <p className="text-zinc-500 text-xs mt-1">Dashboard</p>
           </div>
           <button
@@ -93,7 +98,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             <LogOut className="h-4 w-4" />
             Sign out
           </button>
-          <p className="text-zinc-600 text-xs">v0.1.0 — Pre-alpha</p>
+          <p className="text-zinc-600 text-xs">v1.0.0</p>
         </div>
       </aside>
     </>

@@ -3,6 +3,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { timeAgo } from '@/lib/format';
 import type { LastTrade, BotPosition } from '@/lib/types/bot-state';
 
 interface TradeFeedProps {
@@ -12,17 +13,6 @@ interface TradeFeedProps {
 
 interface FeedEntry extends LastTrade {
   receivedAt: number;
-}
-
-function timeAgo(ts: string): string {
-  if (!ts) return '--';
-  const d = new Date(ts);
-  if (isNaN(d.getTime())) return '--';
-  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
-  if (diff < 0) return 'just now';
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  return `${Math.floor(diff / 3600)}h ago`;
 }
 
 export function TradeFeed({ lastTrade, activePosition }: TradeFeedProps) {
@@ -74,12 +64,23 @@ export function TradeFeed({ lastTrade, activePosition }: TradeFeedProps) {
       </CardHeader>
       <CardContent>
         {activePosition && (
-          <div className="flex items-center justify-between rounded-md border border-amber-700/50 bg-amber-900/20 p-2 mb-2 animate-pulse">
+          <div className={`flex items-center justify-between rounded-md border p-2 mb-2 ${
+            activePosition.status === 'gtc_pending'
+              ? 'border-yellow-700/50 bg-yellow-900/20'
+              : 'border-amber-700/50 bg-amber-900/20 animate-pulse'
+          }`}>
             <div className="flex items-center gap-2">
               <Badge variant={activePosition.side === 'YES' ? 'success' : 'destructive'} className="text-xs">
                 {activePosition.side}
               </Badge>
-              <span className="text-xs text-amber-400 font-medium">OPEN</span>
+              <span className={`text-xs font-medium ${
+                activePosition.status === 'gtc_pending' ? 'text-yellow-400' : 'text-amber-400'
+              }`}>
+                {activePosition.status === 'gtc_pending' ? 'PENDING' : 'OPEN'}
+              </span>
+              {activePosition.status === 'gtc_pending' && (
+                <span className="text-[10px] text-zinc-500" title="Good-Til-Cancelled limit order waiting to fill">GTC</span>
+              )}
             </div>
             <div className="flex items-center gap-3 text-right">
               <span className="font-mono text-sm text-zinc-300">

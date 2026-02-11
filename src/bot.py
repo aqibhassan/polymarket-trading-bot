@@ -305,6 +305,7 @@ class BotOrchestrator:
         yes_price: Any | None = None,
         btc_close: Any | None = None,
         ws_connected: bool = False,
+        pending_gtc: bool = False,
     ) -> None:
         """Publish bot state to Redis for dashboard consumption."""
         from datetime import datetime
@@ -339,6 +340,16 @@ class BotOrchestrator:
                     "entry_price": str(entry_price or "0"),
                     "size": str(position_size or "0"),
                     "entry_time": str(entry_time or now.isoformat()),
+                    "status": "filled",
+                }, ttl=300)
+            elif pending_gtc and active_market is not None:
+                await cache.set("bot:position", {
+                    "market_id": active_market.market_id,
+                    "side": entry_side or "YES",
+                    "entry_price": str(entry_price or "0"),
+                    "size": str(position_size or "0"),
+                    "entry_time": str(entry_time or now.isoformat()),
+                    "status": "gtc_pending",
                 }, ttl=300)
             else:
                 await cache.set("bot:position", None, ttl=300)
@@ -548,6 +559,9 @@ class BotOrchestrator:
         )
         max_clob_entry_price = Decimal(
             str(self._config.get("execution.pricing.max_clob_entry_price", 0.80))
+        )
+        max_clob_spread = Decimal(
+            str(self._config.get("execution.pricing.max_clob_spread", 0.90))
         )
 
         # --- Component setup ---
@@ -780,6 +794,7 @@ class BotOrchestrator:
         last_condition_id: str | None = None
         pending_gtc_oid: str | None = None  # Exchange OID of resting GTC
         pending_gtc_internal_id: str | None = None
+        pending_gtc_position: bool = False  # True while GTC resting, not yet MATCHED
         last_tick_yes_price = Decimal("0.5")
         last_market_id: str | None = None
         last_reset_date = datetime.now(tz=UTC).date()
@@ -871,6 +886,9 @@ class BotOrchestrator:
                             resp = bridge._live_trader._clob_client.get_order(pending_gtc_oid)
                             gtc_status = resp.get("status", "") if isinstance(resp, dict) else ""
                             if gtc_status == "MATCHED":
+                                # GTC filled — NOW we have a real position.
+                                has_open_position = True
+                                trade_count += 1
                                 # Extract actual fill size from CLOB response
                                 raw_matched = resp.get("size_matched", resp.get("sizeMatched", "0"))
                                 actual_matched = Decimal(str(raw_matched)) if raw_matched else Decimal("0")
@@ -898,13 +916,12 @@ class BotOrchestrator:
                                 )
                                 # Position never opened — clear tracking
                                 has_open_position = False
-                                trade_count = max(0, trade_count - 1)
                         except Exception:
                             logger.debug("gtc_settlement_check_failed", exc_info=True)
                             has_open_position = False
-                            trade_count = max(0, trade_count - 1)
                         pending_gtc_oid = None
                         pending_gtc_internal_id = None
+                        pending_gtc_position = False
 
                     # Force-close any open position at window end
                     if has_open_position and last_entry_price is not None:
@@ -1283,6 +1300,7 @@ class BotOrchestrator:
                     yes_price=yes_price,
                     btc_close=latest.close,
                     ws_connected=ws_connected,
+                    pending_gtc=pending_gtc_position,
                 )
 
                 # --- Check kill switch ---
@@ -1477,8 +1495,26 @@ class BotOrchestrator:
                     logger.debug("signal_activity_accumulate_failed", exc_info=True)
 
                 for sig in signals:
-                    if sig.signal_type == SignalType.ENTRY and not has_open_position:
+                    if sig.signal_type == SignalType.ENTRY and not has_open_position and not pending_gtc_position:
                         sigmoid_price = sig.entry_price or yes_price
+
+                        # Reject entries when CLOB spread is too wide (no real liquidity).
+                        # A 0.01/0.99 spread means placeholder orders, not a real market.
+                        clob_spread = (
+                            (clob_best_ask - clob_best_bid)
+                            if clob_best_ask is not None and clob_best_bid is not None
+                            else Decimal("1")
+                        )
+                        if clob_last_trade is None and clob_spread > max_clob_spread:
+                            logger.info(
+                                "clob_spread_too_wide",
+                                spread=str(clob_spread),
+                                max_allowed=str(max_clob_spread),
+                                best_bid=str(clob_best_bid),
+                                best_ask=str(clob_best_ask),
+                                minute=minute_in_window,
+                            )
+                            continue  # Skip — no real liquidity
 
                         # ALWAYS use real Polymarket CLOB price — never sigmoid.
                         # Priority: last_trade > midpoint > REST orderbook midpoint
@@ -1510,11 +1546,18 @@ class BotOrchestrator:
                             )
                             continue  # Skip — no real exchange price
 
+                        # For NO direction: invert the YES-side CLOB price.
+                        # CLOB data comes from YES token; NO token price ≈ 1 - YES price.
+                        if sig.direction == Side.NO:
+                            entry_price = Decimal("1") - entry_price
+                            price_source = f"{price_source}_inverted_for_NO"
+
                         logger.debug(
                             "entry_price_source",
                             price=str(entry_price),
                             source=price_source,
                             sigmoid=str(sigmoid_price),
+                            direction=sig.direction.value,
                         )
 
                         # Safety gate: reject entries where CLOB price is too high (poor R:R)
@@ -1700,10 +1743,12 @@ class BotOrchestrator:
                                     size=str(position_size),
                                     direction=sig.direction.value,
                                 )
-                                # Optimistically track position details
-                                # (will be confirmed when MATCHED).
-                                has_open_position = True
-                                trade_count += 1
+                                # Track pending GTC details — but do NOT mark
+                                # as open position until MATCHED.  This prevents
+                                # the dashboard from showing "In Trade" for an
+                                # unfilled resting order.
+                                has_open_position = False
+                                pending_gtc_position = True
                                 last_entry_price = entry_price
                                 last_entry_side = sig.direction.value
                                 last_entry_time = datetime.now(tz=UTC)

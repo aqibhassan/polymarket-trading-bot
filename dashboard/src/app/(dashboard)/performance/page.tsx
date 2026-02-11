@@ -17,13 +17,9 @@ import { SignalComboChart } from '@/components/charts/signal-combo-chart';
 import { SkipMetricsPanel } from '@/components/charts/skip-metrics-panel';
 import { TradesTable } from '@/components/charts/trades-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ErrorBanner } from '@/components/ui/error-banner';
+import { safeNum } from '@/lib/format';
 import type { StrategyPerformance, Trade, AdvancedMetrics, SignalComboWinRate, SkipMetrics } from '@/lib/types/trade';
-
-/** Safe Number conversion — returns 0 for null/undefined/NaN */
-function safeNum(v: unknown): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
 
 export default function PerformancePage() {
   const [perf, setPerf] = useState<StrategyPerformance | null>(null);
@@ -37,6 +33,7 @@ export default function PerformancePage() {
   const [signalCombos, setSignalCombos] = useState<SignalComboWinRate[]>([]);
   const [skipMetrics, setSkipMetrics] = useState<SkipMetrics | null>(null);
   const [strategy, setStrategy] = useState('singularity');
+  const [error, setError] = useState<string | null>(null);
 
   // Detect active strategy from health endpoint (lighter than SSE)
   useEffect(() => {
@@ -76,7 +73,10 @@ export default function PerformancePage() {
         setAdvancedMetrics(metricsData.total_trades ? metricsData : null);
         setSignalCombos(combosData.combos || []);
         setSkipMetrics(skipData.total_evaluations != null ? skipData : null);
-      } catch { /* fetch failed */ }
+        setError(null);
+      } catch {
+        setError('Failed to load performance data');
+      }
     };
 
     fetchCharts();
@@ -91,7 +91,9 @@ export default function PerformancePage() {
       const res = await fetch(`/api/trades?limit=${TRADES_PER_PAGE}&offset=${tradeOffset}&strategy=${strategy}`);
       const data = await res.json();
       setTrades(data.trades || []);
-    } catch { /* fetch failed */ }
+    } catch {
+      setError('Failed to load trades');
+    }
   }, [strategy, tradePage]);
 
   useEffect(() => {
@@ -139,6 +141,7 @@ export default function PerformancePage() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Performance Analytics</h1>
+      {error && <ErrorBanner message={error} />}
 
       {/* Strategy Summary */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">

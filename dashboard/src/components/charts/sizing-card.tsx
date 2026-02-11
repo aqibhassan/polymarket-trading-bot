@@ -2,12 +2,8 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { safeNum } from '@/lib/format';
 import type { SizingDetails } from '@/lib/types/bot-state';
-
-function safeNum(v: unknown): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
 
 interface SizingCardProps {
   sizing: SizingDetails | null;

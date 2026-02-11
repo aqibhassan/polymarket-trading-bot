@@ -122,6 +122,7 @@ max_spread_cents = 0.05
 [execution.pricing]
 use_clob_pricing = true
 max_clob_entry_price = 0.80
+max_clob_spread = 0.90
 
 [bot]
 tick_interval_seconds = 5

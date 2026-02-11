@@ -259,7 +259,7 @@ class TestStatePublishing:
         await bot._publish_state(
             mock_cache,
             start_time=start,
-            paper_trader=mock_paper_trader,
+            current_balance=Decimal("10500"),
             initial_balance=Decimal("10000"),
             daily_pnl=Decimal("0"),
             trade_count=0,
@@ -287,7 +287,7 @@ class TestStatePublishing:
         await bot._publish_state(
             mock_cache,
             start_time=start,
-            paper_trader=mock_paper_trader,
+            current_balance=Decimal("10500"),
             initial_balance=Decimal("10000"),
             daily_pnl=Decimal("50"),
             trade_count=3,
@@ -319,7 +319,7 @@ class TestStatePublishing:
         await bot._publish_state(
             mock_cache,
             start_time=start,
-            paper_trader=mock_paper_trader,
+            current_balance=Decimal("10500"),
             initial_balance=Decimal("10000"),
             daily_pnl=Decimal("0"),
             trade_count=1,
@@ -352,7 +352,7 @@ class TestStatePublishing:
         await bot._publish_state(
             mock_cache,
             start_time=start,
-            paper_trader=mock_paper_trader,
+            current_balance=Decimal("10500"),
             initial_balance=Decimal("10000"),
             daily_pnl=Decimal("0"),
             trade_count=0,
@@ -377,7 +377,7 @@ class TestStatePublishing:
         await bot._publish_state(
             mock_cache,
             start_time=start,
-            paper_trader=mock_paper_trader,
+            current_balance=Decimal("10500"),
             initial_balance=Decimal("10000"),
             daily_pnl=Decimal("0"),
             trade_count=0,
@@ -411,7 +411,7 @@ class TestStatePublishing:
         await bot._publish_state(
             mock_cache,
             start_time=start,
-            paper_trader=mock_paper_trader,
+            current_balance=Decimal("10500"),
             initial_balance=Decimal("10000"),
             daily_pnl=Decimal("125.50"),
             trade_count=5,
@@ -440,7 +440,7 @@ class TestStatePublishing:
         await bot._publish_state(
             mock_cache,
             start_time=start,
-            paper_trader=mock_paper_trader,
+            current_balance=Decimal("10500"),
             initial_balance=Decimal("10000"),
             daily_pnl=Decimal("0"),
             trade_count=0,

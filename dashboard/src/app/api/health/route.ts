@@ -51,10 +51,10 @@ export async function GET() {
     }
   } catch { /* heartbeat unavailable */ }
 
-  // Check open position
+  // Check open position (only count filled positions, not GTC pending)
   try {
     const pos = await getBotPosition();
-    status.has_open_position = pos !== null;
+    status.has_open_position = pos !== null && pos.status !== 'gtc_pending';
   } catch { /* position unavailable */ }
 
   // Get last trade time from ClickHouse → compute idle time

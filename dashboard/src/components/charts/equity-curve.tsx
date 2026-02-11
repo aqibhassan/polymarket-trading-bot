@@ -25,9 +25,9 @@ export function EquityCurve({ data, height = 300 }: EquityCurveProps) {
   const formatXAxis = (val: string) => {
     const d = new Date(val);
     if (showTime) {
-      return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
     }
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
   };
 
   return (
@@ -45,7 +45,10 @@ export function EquityCurve({ data, height = 300 }: EquityCurveProps) {
           contentStyle={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px' }}
           labelStyle={{ color: '#a1a1aa' }}
           formatter={(value: number) => [`$${value.toFixed(2)}`, 'P&L']}
-          labelFormatter={(label: string) => new Date(label).toLocaleString()}
+          labelFormatter={(label: string) => {
+            const d = new Date(label);
+            return d.toLocaleString('en-GB', { timeZone: 'UTC' }) + ' UTC';
+          }}
         />
         <ReferenceLine y={0} stroke="#52525b" strokeDasharray="3 3" />
         <Line

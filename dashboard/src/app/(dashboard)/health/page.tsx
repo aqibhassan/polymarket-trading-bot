@@ -12,6 +12,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { ErrorBanner } from '@/components/ui/error-banner';
+import { formatUTCTime } from '@/lib/format';
 import type { HealthStatus } from '@/lib/types/bot-state';
 import type { AuditEvent } from '@/lib/types/trade';
 
@@ -41,21 +43,25 @@ export default function HealthPage() {
   const { state } = useBotState();
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchData = async () => {
+    try {
+      const [healthRes, auditRes] = await Promise.all([
+        fetch('/api/health'),
+        fetch('/api/audit-events?limit=30'),
+      ]);
+      const healthData = await healthRes.json();
+      const auditData = await auditRes.json();
+      setHealth(healthData);
+      setAuditEvents(auditData.events || []);
+      setError(null);
+    } catch {
+      setError('Failed to load health data');
+    }
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [healthRes, auditRes] = await Promise.all([
-          fetch('/api/health'),
-          fetch('/api/audit-events?limit=30'),
-        ]);
-        const healthData = await healthRes.json();
-        const auditData = await auditRes.json();
-        setHealth(healthData);
-        setAuditEvents(auditData.events || []);
-      } catch { /* fetch failed */ }
-    };
-
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
@@ -64,6 +70,7 @@ export default function HealthPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl md:text-2xl font-bold text-zinc-50">System Health</h1>
+      {error && <ErrorBanner message={error} onRetry={fetchData} />}
 
       {/* Connection Status Grid */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -108,6 +115,9 @@ export default function HealthPage() {
                   ? `Last heartbeat ${health.heartbeat_age_s}s ago`
                   : 'No heartbeat received'}
               </p>
+              {health?.bot_alive && (
+                <p className="text-xs text-zinc-600">Heartbeat checks every 30s</p>
+              )}
             </div>
             <div className="ml-auto flex gap-2">
               {health?.mode && (
@@ -138,32 +148,48 @@ export default function HealthPage() {
             <p className={`mt-2 text-2xl font-bold ${
               health?.has_open_position
                 ? 'text-emerald-400'
-                : health?.idle_since_s != null && health.idle_since_s > 1800
+                : state.position?.status === 'gtc_pending'
                   ? 'text-amber-400'
-                  : 'text-zinc-50'
+                  : health?.idle_since_s != null && health.idle_since_s > 1800
+                    ? 'text-amber-400'
+                    : 'text-zinc-50'
             }`}>
               {health?.has_open_position
                 ? 'In Trade'
-                : health?.idle_since_s != null
-                  ? formatDuration(health.idle_since_s)
-                  : '--'}
+                : state.position?.status === 'gtc_pending'
+                  ? 'GTC Pending'
+                  : health?.idle_since_s != null
+                    ? formatDuration(health.idle_since_s)
+                    : '--'}
             </p>
             <p className="text-xs text-zinc-500 mt-1">
-              {health?.last_trade_time
-                ? `Last trade: ${new Date(health.last_trade_time).toLocaleTimeString()}`
-                : 'No trades yet'}
+              {state.position?.status === 'gtc_pending'
+                ? 'Limit order waiting to fill'
+                : health?.last_trade_time
+                  ? `Last trade: ${formatUTCTime(health.last_trade_time)}`
+                  : 'No trades yet'}
             </p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
             <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Position</p>
-            <p className={`mt-2 text-2xl font-bold ${health?.has_open_position ? 'text-emerald-400' : 'text-zinc-500'}`}>
-              {health?.has_open_position ? 'Open' : 'None'}
+            <p className={`mt-2 text-2xl font-bold ${
+              health?.has_open_position
+                ? 'text-emerald-400'
+                : state.position?.status === 'gtc_pending'
+                  ? 'text-amber-400'
+                  : 'text-zinc-500'
+            }`}>
+              {health?.has_open_position
+                ? 'Open'
+                : state.position?.status === 'gtc_pending'
+                  ? 'GTC Pending'
+                  : 'None'}
             </p>
             <p className="text-xs text-zinc-500 mt-1">
               {state.position
-                ? `${state.position.side} @ ${Number(state.position.entry_price).toFixed(4)}`
+                ? `${state.position.side} @ $${Number(state.position.entry_price).toFixed(4)}`
                 : 'Waiting for signal'}
             </p>
           </CardContent>
@@ -193,12 +219,12 @@ export default function HealthPage() {
                   {auditEvents.map((event) => (
                     <TableRow key={event.event_id}>
                       <TableCell className="font-mono text-xs text-zinc-400">
-                        {new Date(event.timestamp).toLocaleTimeString()}
+                        {formatUTCTime(event.timestamp)}
                       </TableCell>
                       <TableCell>
                         <Badge variant="secondary">{event.event_type}</Badge>
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-zinc-400">
+                      <TableCell className="font-mono text-xs text-zinc-400" title={event.order_id || ''}>
                         {(event.order_id || '').slice(0, 8)}...
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400">
