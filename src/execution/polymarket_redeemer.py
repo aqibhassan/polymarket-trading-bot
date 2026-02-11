@@ -440,6 +440,8 @@ class PolymarketRedeemer:
                     if not token_id:
                         continue
                     try:
+                        # Rate limit RPC calls to avoid 429s
+                        await asyncio.sleep(1.5)
                         balance = await self._check_ctf_balance(token_id)
                         if balance > 0:
                             logger.info(
@@ -450,6 +452,7 @@ class PolymarketRedeemer:
                                 balance=balance,
                                 question=question,
                             )
+                            await asyncio.sleep(2)
                             tx_hash = await self.redeem_positions(
                                 condition_id=condition_id,
                                 token_id=token_id,
@@ -463,15 +466,24 @@ class PolymarketRedeemer:
                                     token=label,
                                     balance=balance,
                                 )
-                                # Small delay between redemptions
-                                await asyncio.sleep(3)
+                                # Wait for tx confirmation + rate limit
+                                await asyncio.sleep(8)
                     except Exception as exc:
-                        logger.warning(
-                            "sweep.token_check_failed",
-                            condition_id=condition_id[:16],
-                            token=label,
-                            error=str(exc)[:100],
-                        )
+                        err_str = str(exc)[:100]
+                        if "Too many requests" in err_str or "rate limit" in err_str:
+                            logger.info(
+                                "sweep.rate_limited",
+                                condition_id=condition_id[:16],
+                                token=label,
+                            )
+                            await asyncio.sleep(12)
+                        else:
+                            logger.warning(
+                                "sweep.token_check_failed",
+                                condition_id=condition_id[:16],
+                                token=label,
+                                error=err_str,
+                            )
 
         except Exception as exc:
             logger.error("sweep.failed", error=str(exc)[:200])

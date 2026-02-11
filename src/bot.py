@@ -594,7 +594,7 @@ class BotOrchestrator:
                 if matic >= 0.01:
                     try:
                         sweep_hashes = await redeemer.sweep_all_settled(
-                            lookback_hours=72,
+                            lookback_hours=24,
                         )
                         if sweep_hashes:
                             logger.info(
