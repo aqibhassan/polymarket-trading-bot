@@ -11,10 +11,10 @@ kelly_multiplier = 0.25              # Quarter-Kelly (matches paper)
 [risk.live_safety]
 balance_floor_pct = 0.50             # Halt if balance < 50% of initial
 max_consecutive_losses = 5           # Halt after 5 consecutive losses
-ramp_enabled = true
-ramp_day_1_max_pct = 0.01           # Week 1: 1%
-ramp_day_7_max_pct = 0.02           # Week 2-4: 2%
-ramp_day_30_max_pct = 0.05          # Month 2+: 5% (full)
+ramp_enabled = false                 # Disabled: $100 balance needs full 5% to meet Polymarket 5-token minimum
+ramp_day_1_max_pct = 0.05           # All phases at 5% — re-enable ramp when balance > $500
+ramp_day_7_max_pct = 0.05
+ramp_day_30_max_pct = 0.05
 
 [risk.fees]
 slippage_bps = 0                     # Real slippage observed from fills
