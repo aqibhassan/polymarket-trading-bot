@@ -849,29 +849,36 @@ class BotOrchestrator:
                                 exit_price=str(exit_price_wb),
                                 reason="redeeming on-chain via CTF",
                             )
-                            # Auto-claim: redeem settled tokens on-chain
-                            logger.info(
-                                "live_redeem_check",
-                                has_redeemer=redeemer is not None,
-                                condition_id=last_condition_id[:16] if last_condition_id else "none",
-                                token_id=last_token_id[:16] if last_token_id else "none",
-                            )
-                            if redeemer is not None and last_condition_id and last_token_id:
-                                try:
-                                    tx_hash = await redeemer.redeem_positions(
-                                        condition_id=last_condition_id,
-                                        token_id=last_token_id,
-                                    )
-                                    if tx_hash:
-                                        logger.info(
-                                            "live_redeem_success",
-                                            tx_hash=tx_hash,
-                                            condition_id=last_condition_id[:16],
+                            # Auto-claim: redeem settled tokens on-chain (only winners)
+                            if exit_price_wb == Decimal("1"):
+                                logger.info(
+                                    "live_redeem_check",
+                                    has_redeemer=redeemer is not None,
+                                    condition_id=last_condition_id[:16] if last_condition_id else "none",
+                                    token_id=last_token_id[:16] if last_token_id else "none",
+                                )
+                                if redeemer is not None and last_condition_id and last_token_id:
+                                    try:
+                                        tx_hash = await redeemer.redeem_positions(
+                                            condition_id=last_condition_id,
+                                            token_id=last_token_id,
                                         )
-                                        # Wait a moment for balance to update
-                                        await asyncio.sleep(5)
-                                except Exception:
-                                    logger.warning("live_redeem_failed", exc_info=True)
+                                        if tx_hash:
+                                            logger.info(
+                                                "live_redeem_success",
+                                                tx_hash=tx_hash,
+                                                condition_id=last_condition_id[:16],
+                                            )
+                                            # Wait a moment for balance to update
+                                            await asyncio.sleep(5)
+                                    except Exception:
+                                        logger.warning("live_redeem_failed", exc_info=True)
+                            else:
+                                logger.info(
+                                    "live_loss_no_redeem",
+                                    exit_price=str(exit_price_wb),
+                                    reason="losing position, tokens worthless",
+                                )
                         # P&L with fee deduction (entry + exit)
                         gross_pnl_wb = (exit_price_wb - last_entry_price) * (
                             last_position_size or Decimal("0")
@@ -1643,28 +1650,35 @@ class BotOrchestrator:
                                 exit_price=str(exit_price_ex),
                                 reason="redeeming on-chain via CTF",
                             )
-                            # Auto-claim: redeem settled tokens on-chain
-                            logger.info(
-                                "live_redeem_check",
-                                has_redeemer=redeemer is not None,
-                                condition_id=last_condition_id[:16] if last_condition_id else "none",
-                                token_id=last_token_id[:16] if last_token_id else "none",
-                            )
-                            if redeemer is not None and last_condition_id and last_token_id:
-                                try:
-                                    tx_hash = await redeemer.redeem_positions(
-                                        condition_id=last_condition_id,
-                                        token_id=last_token_id,
-                                    )
-                                    if tx_hash:
-                                        logger.info(
-                                            "live_redeem_success",
-                                            tx_hash=tx_hash,
-                                            condition_id=last_condition_id[:16],
+                            # Auto-claim: redeem settled tokens on-chain (only winners)
+                            if exit_price_ex == Decimal("1"):
+                                logger.info(
+                                    "live_redeem_check",
+                                    has_redeemer=redeemer is not None,
+                                    condition_id=last_condition_id[:16] if last_condition_id else "none",
+                                    token_id=last_token_id[:16] if last_token_id else "none",
+                                )
+                                if redeemer is not None and last_condition_id and last_token_id:
+                                    try:
+                                        tx_hash = await redeemer.redeem_positions(
+                                            condition_id=last_condition_id,
+                                            token_id=last_token_id,
                                         )
-                                        await asyncio.sleep(5)
-                                except Exception:
-                                    logger.warning("live_redeem_failed", exc_info=True)
+                                        if tx_hash:
+                                            logger.info(
+                                                "live_redeem_success",
+                                                tx_hash=tx_hash,
+                                                condition_id=last_condition_id[:16],
+                                            )
+                                            await asyncio.sleep(5)
+                                    except Exception:
+                                        logger.warning("live_redeem_failed", exc_info=True)
+                            else:
+                                logger.info(
+                                    "live_loss_no_redeem",
+                                    exit_price=str(exit_price_ex),
+                                    reason="losing position, tokens worthless",
+                                )
                         # P&L with fee deduction (entry + exit)
                         gross_pnl_ex = (exit_price_ex - (last_entry_price or Decimal("0"))) * (
                             last_position_size or Decimal("0")
