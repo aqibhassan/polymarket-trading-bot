@@ -1401,6 +1401,7 @@ class BotOrchestrator:
                         clob_best_ask=str(clob_best_ask),
                         clob_best_bid=str(clob_best_bid),
                         clob_midpoint=str(clob_midpoint),
+                        clob_last_trade=str(clob_last_trade),
                         delta=str(clob_best_ask - yes_price),
                     )
 
@@ -1479,15 +1480,32 @@ class BotOrchestrator:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position:
                         sigmoid_price = sig.entry_price or yes_price
 
-                        # Use CLOB best_ask for live entry pricing
-                        if (
-                            use_clob_pricing
-                            and self._mode == "live"
-                            and clob_best_ask is not None
-                        ):
-                            entry_price = clob_best_ask
-                        else:
-                            entry_price = sigmoid_price
+                        # Use real CLOB price in ALL modes when available.
+                        # Priority: last_trade > midpoint (tight spread) > best_ask (tight) > sigmoid
+                        entry_price = sigmoid_price  # default fallback
+                        price_source = "sigmoid"
+                        if use_clob_pricing:
+                            clob_spread = (
+                                float(clob_best_ask - clob_best_bid)
+                                if clob_best_ask is not None and clob_best_bid is not None
+                                else 1.0
+                            )
+                            if clob_last_trade is not None:
+                                entry_price = clob_last_trade
+                                price_source = "clob_last_trade"
+                            elif clob_midpoint is not None and clob_spread < Decimal("0.50"):
+                                entry_price = clob_midpoint
+                                price_source = "clob_midpoint"
+                            elif clob_best_ask is not None and clob_spread < Decimal("0.50"):
+                                entry_price = clob_best_ask
+                                price_source = "clob_best_ask"
+                            # else: keep sigmoid as fallback for ultra-thin markets
+                        logger.debug(
+                            "entry_price_source",
+                            price=str(entry_price),
+                            source=price_source,
+                            sigmoid=str(sigmoid_price),
+                        )
 
                         # Safety gate: reject entries where CLOB price is too high (poor R:R)
                         if entry_price > max_clob_entry_price:
@@ -1691,7 +1709,7 @@ class BotOrchestrator:
                                     if active_market else market_id
                                 )
                                 last_signal_details_str = last_signal_details
-                                last_clob_entry_price = clob_best_ask
+                                last_clob_entry_price = clob_last_trade or clob_midpoint or clob_best_ask
                                 last_sigmoid_entry_price = sigmoid_price
 
                                 # Publish ENTRY event for GTC orders (same as instant fill)
@@ -1763,7 +1781,7 @@ class BotOrchestrator:
                                 if active_market else market_id
                             )
                             last_signal_details_str = last_signal_details
-                            last_clob_entry_price = clob_best_ask
+                            last_clob_entry_price = clob_last_trade or clob_midpoint or clob_best_ask
                             last_sigmoid_entry_price = sigmoid_price
 
                             # Persist position to Redis (survives restart)
