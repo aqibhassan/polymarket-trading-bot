@@ -1400,6 +1400,10 @@ class BotOrchestrator:
                                 last_fee_cost = costs.fee_cost
                                 last_token_id = token_id
                                 last_market_id = market_id
+                                last_condition_id = (
+                                    (active_market.condition_id or active_market.market_id)
+                                    if active_market else market_id
+                                )
                                 last_signal_details_str = last_signal_details
 
                                 # Publish ENTRY event for GTC orders (same as instant fill)
