@@ -482,57 +482,122 @@ class PolymarketRedeemer:
     async def _fetch_settled_btc_markets(
         self, lookback_hours: int = 48,
     ) -> list[dict[str, str]]:
-        """Fetch recently settled BTC 15-minute markets from the Gamma API."""
+        """Fetch recently settled BTC 15-minute markets via Gamma events API.
+
+        Uses the same slug-based approach as the scanner to find BTC 15m
+        markets, scanning past windows within the lookback period.
+        """
+        import json as _json
+        import time as _time
+
         results: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
         gamma_url = "https://gamma-api.polymarket.com"
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            # Query for closed BTC markets
-            resp = await client.get(
-                f"{gamma_url}/markets",
-                params={
-                    "closed": "true",
-                    "limit": 100,
-                },
-            )
-            resp.raise_for_status()
-            markets = resp.json()
+        # Generate slugs for past windows within lookback
+        now_ts = int(_time.time())
+        current_window = (now_ts // 900) * 900
+        num_windows = (lookback_hours * 3600) // 900
+        # Cap to avoid excessive API calls
+        num_windows = min(num_windows, 100)
 
-        for m in markets:
-            question = m.get("question", "")
-            q_lower = question.lower()
+        consecutive_empty = 0
 
-            # Filter for BTC 15-minute candle markets only
-            if "btc" not in q_lower and "bitcoin" not in q_lower:
-                continue
-            if "15" not in q_lower and "minute" not in q_lower:
-                # Also accept "Up or Down" pattern
-                if "up or down" not in q_lower:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            for i in range(num_windows):
+                window_ts = current_window - (i * 900)
+                slug = f"btc-updown-15m-{window_ts}"
+
+                try:
+                    resp = await client.get(
+                        f"{gamma_url}/events",
+                        params={"slug": slug},
+                    )
+                    if resp.status_code != 200:
+                        consecutive_empty += 1
+                        if consecutive_empty > 10:
+                            break  # No more markets in this range
+                        continue
+                    events = resp.json()
+                except Exception:
+                    consecutive_empty += 1
+                    if consecutive_empty > 10:
+                        break
                     continue
 
-            condition_id = m.get("condition_id", "") or m.get("conditionId", "")
-            if not condition_id:
-                continue
+                found_any = False
+                for event in events:
+                    for m in event.get("markets", []):
+                        if not m.get("closed", False):
+                            continue
 
-            # Extract token IDs
-            tokens = m.get("tokens", [])
-            yes_token_id = ""
-            no_token_id = ""
-            for t in tokens:
-                outcome = t.get("outcome", "").upper()
-                if outcome == "YES":
-                    yes_token_id = t.get("token_id", "")
-                elif outcome == "NO":
-                    no_token_id = t.get("token_id", "")
+                        condition_id = (
+                            m.get("conditionId", "")
+                            or m.get("condition_id", "")
+                        )
+                        if not condition_id or condition_id in seen_ids:
+                            continue
+                        seen_ids.add(condition_id)
 
-            if not yes_token_id and not no_token_id:
-                continue
+                        # Parse clobTokenIds + outcomes to get YES/NO tokens
+                        clob_ids_raw = m.get("clobTokenIds", "")
+                        outcomes_raw = m.get("outcomes", "")
+                        try:
+                            clob_ids = (
+                                _json.loads(clob_ids_raw)
+                                if isinstance(clob_ids_raw, str)
+                                else clob_ids_raw
+                            )
+                        except (ValueError, TypeError):
+                            clob_ids = []
+                        try:
+                            outcomes = (
+                                _json.loads(outcomes_raw)
+                                if isinstance(outcomes_raw, str)
+                                else outcomes_raw
+                            )
+                        except (ValueError, TypeError):
+                            outcomes = []
 
-            results.append({
-                "condition_id": condition_id,
-                "yes_token_id": yes_token_id,
-                "no_token_id": no_token_id,
-                "question": question,
-            })
+                        yes_token_id = ""
+                        no_token_id = ""
+                        if clob_ids and outcomes and len(clob_ids) >= 2:
+                            for idx, outcome in enumerate(outcomes):
+                                o = str(outcome).upper()
+                                if idx < len(clob_ids):
+                                    if o in ("UP", "YES"):
+                                        yes_token_id = str(clob_ids[idx])
+                                    elif o in ("DOWN", "NO"):
+                                        no_token_id = str(clob_ids[idx])
+
+                        # Fallback: try tokens array
+                        if not yes_token_id and not no_token_id:
+                            for t in m.get("tokens", []):
+                                o = t.get("outcome", "").upper()
+                                if o in ("YES", "UP"):
+                                    yes_token_id = t.get("token_id", "")
+                                elif o in ("NO", "DOWN"):
+                                    no_token_id = t.get("token_id", "")
+
+                        if not yes_token_id and not no_token_id:
+                            continue
+
+                        results.append({
+                            "condition_id": condition_id,
+                            "yes_token_id": yes_token_id,
+                            "no_token_id": no_token_id,
+                            "question": m.get("question", ""),
+                        })
+                        found_any = True
+
+                if found_any:
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
+                    if consecutive_empty > 10:
+                        break
+
+                # Rate limit
+                await asyncio.sleep(0.15)
 
         return results
