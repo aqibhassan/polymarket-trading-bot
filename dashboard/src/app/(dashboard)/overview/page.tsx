@@ -17,7 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DollarSign, TrendingUp, Trophy, BarChart3, Activity } from 'lucide-react';
 import type { DailyPnl, StrategyPerformance } from '@/lib/types/trade';
 
-const INITIAL_BALANCE = 10000;
+const DEFAULT_INITIAL_BALANCE = 10000;
 
 /** Safe Number conversion — returns 0 for null/undefined/NaN */
 function safeNum(v: unknown): number {
@@ -107,11 +107,15 @@ export default function OverviewPage() {
   const lossCount = useRedisDaily ? (state.daily!.loss_count ?? tradeCount - winCount) : tradeCount - winCount;
   const winRate = tradeCount > 0 ? ((winCount / tradeCount) * 100).toFixed(1) : '—';
 
-  // Balance: always compute from initial + ClickHouse total PnL for accuracy
-  // Redis balance resets on restart and misses trades from prior runs
-  const displayBalance = INITIAL_BALANCE + chTotalPnl;
+  // Balance: use real balance from Redis (live mode) or fallback to initial + PnL
+  const redisBalance = state.balance ? Number(state.balance.balance) : null;
+  const redisInitial = state.balance ? Number(state.balance.initial_balance) : null;
+  const initialBalance = redisInitial && redisInitial > 0 ? redisInitial : DEFAULT_INITIAL_BALANCE;
+  const displayBalance = redisBalance != null && Number.isFinite(redisBalance) && redisBalance > 0
+    ? redisBalance
+    : initialBalance + chTotalPnl;
   const displayPnl = chTotalPnl;
-  const displayPnlPct = (chTotalPnl / INITIAL_BALANCE) * 100;
+  const displayPnlPct = initialBalance > 0 ? (chTotalPnl / initialBalance) * 100 : 0;
 
   const pnlTrend = displayPnl >= 0 ? 'up' as const : 'down' as const;
 

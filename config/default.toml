@@ -37,9 +37,12 @@ threshold_pct = 0.05
 [strategy.singularity]
 # Re-optimized config (Feb 2026): 83.83% WR, 64K trades, Sharpe 2.42
 # Neutral time-of-day, effective_min floor of 2, cum_return==0 guard
+# Tuned Feb 10: lowered momentum thresholds + contrarian filter to reduce
+# insufficient_agreement skips (28/54 windows skipped, 85% from this reason).
+# Live data showed only OFI + time_of_day voting; momentum needs lower thresholds.
 entry_minute_start = 8
 entry_minute_end = 12
-min_confidence = 0.50
+min_confidence = 0.45
 min_signals_agree = 2
 hold_to_settlement = true
 stop_loss_pct = 1.00
@@ -51,26 +54,30 @@ weight_ofi = 0.25
 weight_futures = 0.15
 weight_vol = 0.10
 weight_time = 0.10
+# Contrarian filter: allow entries when BTC has moved up to 0.10% against
+# signal direction. Default 0.0% was blocking legitimate ensemble signals.
+skip_contrarian = true
+contrarian_threshold_pct = 0.10
 
 [[strategy.singularity.entry_tiers]]
 minute = 8
-threshold_pct = 0.14
+threshold_pct = 0.10
 
 [[strategy.singularity.entry_tiers]]
 minute = 9
-threshold_pct = 0.12
+threshold_pct = 0.08
 
 [[strategy.singularity.entry_tiers]]
 minute = 10
-threshold_pct = 0.09
+threshold_pct = 0.06
 
 [[strategy.singularity.entry_tiers]]
 minute = 11
-threshold_pct = 0.07
+threshold_pct = 0.04
 
 [[strategy.singularity.entry_tiers]]
 minute = 12
-threshold_pct = 0.05
+threshold_pct = 0.02
 
 [exit]
 profit_target_pct = 0.05

@@ -83,7 +83,7 @@ export interface SignalActivityEvent {
   timestamp: string;
   minute: number;
   market_id: string;
-  outcome: 'entry' | 'skip';
+  outcome: 'entry' | 'skip' | 'rejected';
   reason: string;
   direction: string;
   confidence: number;

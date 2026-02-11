@@ -17,6 +17,13 @@ const REASON_LABELS: Record<string, string> = {
   entry_signal: 'Entry generated',
 };
 
+function formatTime(ts: string): string {
+  if (!ts) return '--';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '--';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
 function timeAgo(ts: string): string {
   if (!ts) return '--';
   const d = new Date(ts);
@@ -26,6 +33,24 @@ function timeAgo(ts: string): string {
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   return `${Math.floor(diff / 3600)}h ago`;
+}
+
+function VoteSummary({ votes }: { votes: Record<string, number> }) {
+  const entries = Object.entries(votes);
+  if (entries.length === 0) return null;
+  return (
+    <div className="flex gap-1 flex-wrap mt-1">
+      {entries.map(([name, val]) => {
+        const dir = val > 0 ? 'YES' : val < 0 ? 'NO' : 'neutral';
+        const color = dir === 'YES' ? 'text-emerald-400' : dir === 'NO' ? 'text-red-400' : 'text-zinc-500';
+        return (
+          <span key={name} className={`text-[10px] font-mono ${color}`}>
+            {name}={val > 0 ? '+' : ''}{typeof val === 'number' ? val.toFixed(2) : val}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
@@ -55,7 +80,8 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
   // Compute summary stats from feed
   const skipCount = feed.filter((e) => e.outcome === 'skip').length;
   const entryCount = feed.filter((e) => e.outcome === 'entry').length;
-  const feedTotal = skipCount + entryCount;
+  const rejectedCount = feed.filter((e) => e.outcome === 'rejected').length;
+  const feedTotal = skipCount + entryCount + rejectedCount;
   const feedSkipRate = feedTotal > 0 ? ((skipCount / feedTotal) * 100).toFixed(0) : '0';
 
   return (
@@ -66,11 +92,16 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
       <CardContent>
         {/* Compact summary bar */}
         {feed.length > 0 && (
-          <div className="flex items-center gap-2 mb-3 text-xs">
+          <div className="flex items-center gap-2 mb-3 text-xs flex-wrap">
             <span className="text-zinc-500">Recent:</span>
             <Badge variant="outline" className="border-amber-600 text-amber-400 text-xs">
               {skipCount} skips
             </Badge>
+            {rejectedCount > 0 && (
+              <Badge variant="destructive" className="text-xs">
+                {rejectedCount} rejected
+              </Badge>
+            )}
             <span className="text-zinc-600">/</span>
             <Badge variant="success" className="text-xs">
               {entryCount} entries
@@ -88,46 +119,67 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
             </p>
           </div>
         ) : (
-          <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+          <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
             {feed.map((evt) => {
               const isEntry = evt.outcome === 'entry';
+              const isRejected = evt.outcome === 'rejected';
+              const badgeVariant = isEntry ? 'success' : isRejected ? 'destructive' : 'outline';
+              const badgeClass = isEntry ? '' : isRejected ? '' : 'border-amber-600 text-amber-400';
+              const badgeLabel = isEntry ? 'ENTRY' : isRejected ? 'REJECTED' : 'SKIP';
+              const borderClass = isRejected ? 'border-red-800/50' : 'border-zinc-800';
+
               return (
                 <div
                   key={evt.id}
-                  className="flex items-center justify-between rounded-md border border-zinc-800 p-2"
+                  className={`rounded-md border ${borderClass} p-2`}
                 >
-                  <div className="flex items-center gap-2">
-                    <Badge
-                      variant={isEntry ? 'success' : 'outline'}
-                      className={`text-xs ${isEntry ? '' : 'border-amber-600 text-amber-400'}`}
-                    >
-                      {isEntry ? 'ENTRY' : 'SKIP'}
-                    </Badge>
-                    {evt.direction && (
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
                       <Badge
-                        variant={evt.direction === 'YES' ? 'success' : 'destructive'}
-                        className="text-xs"
+                        variant={badgeVariant}
+                        className={`text-xs ${badgeClass}`}
                       >
-                        {evt.direction}
+                        {badgeLabel}
                       </Badge>
-                    )}
-                    <span className="text-xs text-zinc-500">
-                      {REASON_LABELS[evt.reason] || evt.reason}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 text-right">
-                    {evt.confidence > 0 && (
-                      <span className="font-mono text-sm text-zinc-300">
-                        {(evt.confidence * 100).toFixed(1)}%
+                      {evt.direction && (
+                        <Badge
+                          variant={evt.direction === 'YES' ? 'success' : 'destructive'}
+                          className="text-xs"
+                        >
+                          {evt.direction}
+                        </Badge>
+                      )}
+                      <span className="text-xs text-zinc-500">
+                        {REASON_LABELS[evt.reason] || evt.reason}
                       </span>
-                    )}
-                    <span className="text-xs text-zinc-500">
-                      m{evt.minute}
-                    </span>
-                    <span className="text-xs text-zinc-500 w-14 text-right">
-                      {timeAgo(evt.timestamp)}
-                    </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-right">
+                      {evt.confidence > 0 && (
+                        <span className="font-mono text-sm text-zinc-300">
+                          {(evt.confidence * 100).toFixed(1)}%
+                        </span>
+                      )}
+                      <span className="text-xs text-zinc-500">
+                        m{evt.minute}
+                      </span>
+                      <span className="text-xs text-zinc-500 w-14 text-right">
+                        {formatTime(evt.timestamp)}
+                      </span>
+                    </div>
                   </div>
+                  {/* Detail row — votes and additional context */}
+                  {(evt.detail || (evt.votes && Object.keys(evt.votes).length > 0)) && (
+                    <div className="mt-1 pl-1">
+                      {evt.votes && Object.keys(evt.votes).length > 0 && (
+                        <VoteSummary votes={evt.votes} />
+                      )}
+                      {evt.detail && (
+                        <p className="text-[10px] text-zinc-600 mt-0.5 font-mono truncate">
+                          {evt.detail}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}

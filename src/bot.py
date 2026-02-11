@@ -157,6 +157,54 @@ class BotOrchestrator:
         self._cleanup_sentinels()
 
     # ------------------------------------------------------------------
+    # Position state persistence (survives Docker restart)
+    # ------------------------------------------------------------------
+
+    _POS_KEY = "mvhe:open_position"
+
+    @staticmethod
+    async def _save_position(
+        redis_conn: Any,
+        *,
+        market_id: str,
+        token_id: str,
+        entry_price: Decimal,
+        entry_side: str,
+        position_size: Decimal,
+        fee_cost: Decimal,
+    ) -> None:
+        """Persist open position state to Redis."""
+        import json as _json
+
+        data = _json.dumps({
+            "market_id": market_id,
+            "token_id": token_id,
+            "entry_price": str(entry_price),
+            "entry_side": entry_side,
+            "position_size": str(position_size),
+            "fee_cost": str(fee_cost),
+        })
+        await redis_conn.set(BotOrchestrator._POS_KEY, data)
+
+    @staticmethod
+    async def _clear_position(redis_conn: Any) -> None:
+        """Remove persisted position state from Redis."""
+        await redis_conn.delete(BotOrchestrator._POS_KEY)
+
+    @staticmethod
+    async def _load_position(redis_conn: Any) -> dict[str, Any] | None:
+        """Load persisted position state from Redis, if any."""
+        import json as _json
+
+        raw = await redis_conn.get(BotOrchestrator._POS_KEY)
+        if raw is None:
+            return None
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
     # Swing trading mode (1m candles -> 15m windows)
     # ------------------------------------------------------------------
 
@@ -353,7 +401,7 @@ class BotOrchestrator:
         from src.execution.bridge import ExecutionBridge
         from src.execution.paper_trader import PaperTrader
         from src.models.market import Candle, MarketState, OrderBookSnapshot, Side
-        from src.models.order import OrderSide, OrderType
+        from src.models.order import OrderSide, OrderStatus, OrderType
         from src.models.signal import SignalType
         from src.risk.cost_calculator import CostCalculator
         from src.risk.kill_switch import KillSwitch
@@ -463,8 +511,9 @@ class BotOrchestrator:
             kelly_multiplier=kelly_multiplier,
         )
         cost_calculator = CostCalculator()
-        portfolio = Portfolio()
-        portfolio.update_equity(initial_balance)
+        # Portfolio is created after live balance sync (below) to avoid
+        # peak_equity being set to the paper default ($10k) before the
+        # real live balance ($99) is known — which causes a false 99% drawdown.
 
         from src.execution.circuit_breaker import CircuitBreaker
 
@@ -488,18 +537,35 @@ class BotOrchestrator:
             live_balance = await live_trader.get_balance()
             if live_balance is not None and live_balance > 0:
                 initial_balance = Decimal(str(live_balance))
-                portfolio.update_equity(initial_balance)
                 risk_mgr._initial_balance = initial_balance
                 logger.info("live_balance_synced", balance=str(initial_balance))
             elif live_balance is not None and live_balance <= 0:
                 logger.critical("live_zero_balance", balance=str(live_balance))
                 return
+            # Enforce minimum starting balance for live trading
+            min_starting = Decimal(
+                str(self._config.get("risk.min_starting_balance", 10))
+            )
+            if initial_balance < min_starting:
+                logger.critical(
+                    "live_below_min_starting_balance",
+                    balance=str(initial_balance),
+                    min_required=str(min_starting),
+                )
+                return
+            # Auto-confirm: CLI already gates on --auto-confirm +
+            # MVHE_LIVE_AUTO_CONFIRM=true; bridge needs skip_confirmation
+            # so it doesn't call input() in non-TTY Docker containers.
+            auto_confirm = (
+                os.environ.get("MVHE_LIVE_AUTO_CONFIRM", "").lower() == "true"
+            )
             bridge = ExecutionBridge(
                 mode=self._mode,
                 live_trader=live_trader,
                 circuit_breaker=circuit_breaker,
                 order_timeout_seconds=order_timeout,
                 order_max_retries=order_max_retries,
+                skip_confirmation=auto_confirm,
             )
         else:
             paper_trader = PaperTrader(initial_balance=initial_balance)
@@ -510,6 +576,11 @@ class BotOrchestrator:
                 order_timeout_seconds=order_timeout,
                 order_max_retries=order_max_retries,
             )
+
+        # Portfolio is created AFTER initial_balance is finalized (live or paper)
+        # so peak_equity starts at the correct value.
+        portfolio = Portfolio()
+        portfolio.update_equity(initial_balance)
 
         # Cached balance for both modes
         cached_balance = initial_balance
@@ -572,6 +643,25 @@ class BotOrchestrator:
         window_activity_published = False  # one event per 15-min window
         window_last_skip_eval: dict[str, Any] = {}  # accumulate last skip reason
 
+        # Recover orphaned position from Redis (survives Docker restart)
+        recovered_pos = await self._load_position(redis_conn)
+        if recovered_pos is not None:
+            has_open_position = True
+            last_entry_price = Decimal(recovered_pos["entry_price"])
+            last_entry_side = recovered_pos["entry_side"]
+            last_position_size = Decimal(recovered_pos["position_size"])
+            last_token_id = recovered_pos.get("token_id")
+            last_market_id = recovered_pos.get("market_id")
+            last_fee_cost = Decimal(recovered_pos.get("fee_cost", "0"))
+            last_entry_time = datetime.now(tz=UTC)
+            logger.warning(
+                "position_recovered_from_redis",
+                market_id=last_market_id,
+                entry_price=str(last_entry_price),
+                side=last_entry_side,
+                size=str(last_position_size),
+            )
+
         logger.info(
             "swing_loop_started",
             mode=self._mode,
@@ -597,6 +687,15 @@ class BotOrchestrator:
                     portfolio.update_equity(cached_balance)
                     last_reset_date = now_utc.date()
                     logger.info("daily_stats_reset", date=str(last_reset_date))
+
+                # Check WS connectivity — skip trading on stale data
+                ws_connected = ws_feed.is_connected
+                if not ws_connected:
+                    self._remove_sentinel(_WS_CONNECTED_FILE)
+                    logger.warning("swing_ws_disconnected")
+                    await asyncio.sleep(self._tick_interval)
+                    continue
+                self._touch_sentinel(_WS_CONNECTED_FILE)
 
                 # Wait for a 1m candle to close
                 candles = await ws_feed.get_candles("BTCUSDT", limit=1)
@@ -732,6 +831,11 @@ class BotOrchestrator:
                         last_entry_side = None
                         last_entry_time = None
                         last_position_size = None
+                        # Clear persisted position from Redis
+                        try:
+                            await self._clear_position(redis_conn)
+                        except Exception:
+                            logger.debug("position_clear_failed", exc_info=True)
 
                     # Always clear active_market and stale position metadata
                     # at window boundary to prevent state leak between windows
@@ -947,9 +1051,15 @@ class BotOrchestrator:
                 }
 
                 # Build MarketState from scanner result or synthetic
-                market_id = active_market.market_id if active_market else "btc_15m_swing"
-                yes_token_id = active_market.yes_token_id if active_market else ""
-                no_token_id = active_market.no_token_id if active_market else ""
+                # Skip signal processing if no real market found (empty
+                # token_id would cause live order failures)
+                if active_market is None:
+                    logger.info("swing_skip_no_market", minute=minute_in_window)
+                    await asyncio.sleep(self._tick_interval)
+                    continue
+                market_id = active_market.market_id
+                yes_token_id = active_market.yes_token_id
+                no_token_id = active_market.no_token_id
 
                 market_state = MarketState(
                     market_id=market_id,
@@ -1118,6 +1228,14 @@ class BotOrchestrator:
                                 size=position_size,
                                 strategy_id=sig.strategy_id,
                             )
+                            # Check for rejected orders (circuit breaker, timeout, etc.)
+                            if entry_order.status == OrderStatus.REJECTED:
+                                logger.warning(
+                                    "entry_order_rejected",
+                                    market_id=sig.market_id,
+                                    reason="order returned REJECTED status",
+                                )
+                                continue
                             # Use actual filled size (handles partial fills)
                             actual_fill_size = entry_order.filled_size or position_size
                             actual_fill_price = entry_order.avg_fill_price or entry_price
@@ -1134,6 +1252,20 @@ class BotOrchestrator:
                             last_token_id = token_id
                             last_market_id = market_id
                             last_signal_details_str = last_signal_details
+
+                            # Persist position to Redis (survives restart)
+                            try:
+                                await self._save_position(
+                                    redis_conn,
+                                    market_id=market_id,
+                                    token_id=token_id,
+                                    entry_price=actual_fill_price,
+                                    entry_side=sig.direction.value,
+                                    position_size=actual_fill_size,
+                                    fee_cost=costs.fee_cost,
+                                )
+                            except Exception:
+                                logger.warning("position_persist_failed", exc_info=True)
 
                             # Sync balance after entry
                             if self._mode == "live" and live_trader is not None:
@@ -1226,6 +1358,28 @@ class BotOrchestrator:
                                 reason=decision.reason,
                                 requested_size=str(position_size),
                             )
+                            # Publish rejection to signal activity feed
+                            try:
+                                import uuid as _uuid
+                                reject_event = {
+                                    "id": str(_uuid.uuid4())[:8],
+                                    "timestamp": datetime.now(tz=UTC).isoformat(),
+                                    "minute": minute_in_window,
+                                    "market_id": sig.market_id,
+                                    "outcome": "rejected",
+                                    "reason": f"risk: {decision.reason}",
+                                    "direction": sig.direction.value if hasattr(sig.direction, "value") else str(sig.direction),
+                                    "confidence": last_confidence,
+                                    "votes": last_eval.get("votes", {}) if last_eval else {},
+                                    "detail": f"size={position_size}, balance={cached_balance}",
+                                }
+                                await cache.push_to_list(
+                                    "bot:signal_activity", reject_event,
+                                    max_length=20, ttl=3600,
+                                )
+                                window_activity_published = True
+                            except Exception:
+                                logger.debug("signal_activity_reject_publish_failed", exc_info=True)
 
                     elif sig.signal_type == SignalType.EXIT and has_open_position:
                         # Binary settlement: $1 if correct, $0 if wrong
@@ -1332,6 +1486,11 @@ class BotOrchestrator:
                         last_entry_side = None
                         last_entry_time = None
                         last_position_size = None
+                        # Clear persisted position from Redis
+                        try:
+                            await self._clear_position(redis_conn)
+                        except Exception:
+                            logger.debug("position_clear_failed", exc_info=True)
 
                 # Wait for next candle (or shutdown)
                 try:

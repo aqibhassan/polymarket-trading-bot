@@ -5,6 +5,7 @@
 max_position_pct = 0.01              # Start 1% (paper uses 5%)
 min_position_pct = 0.005
 max_daily_drawdown_pct = 0.03        # 3% kill switch (paper uses 5%)
+min_starting_balance = 10             # Minimum 10 USDC to start live trading
 kelly_multiplier = 0.15              # Eighth-Kelly (paper uses quarter)
 
 [risk.live_safety]

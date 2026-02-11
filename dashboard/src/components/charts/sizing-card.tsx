@@ -40,13 +40,17 @@ export function SizingCard({ sizing }: SizingCardProps) {
                 </p>
               </div>
               <div>
-                <p className="text-xs text-zinc-500">Shares</p>
-                <p className="font-mono text-sm text-zinc-200">{safeNum(sizing.recommended_size).toFixed(2)}</p>
+                <p className="text-xs text-zinc-500">USDC Size</p>
+                <p className="font-mono text-sm text-emerald-400">
+                  ${safeNum(sizing.recommended_size).toFixed(2)}
+                </p>
               </div>
               <div>
-                <p className="text-xs text-zinc-500">USDC Cost</p>
-                <p className="font-mono text-sm text-emerald-400">
-                  ${(safeNum(sizing.recommended_size) * safeNum(sizing.entry_price)).toFixed(2)}
+                <p className="text-xs text-zinc-500">Shares</p>
+                <p className="font-mono text-sm text-zinc-200">
+                  {safeNum(sizing.entry_price) > 0
+                    ? (safeNum(sizing.recommended_size) / safeNum(sizing.entry_price)).toFixed(2)
+                    : '—'}
                 </p>
               </div>
               <div>
@@ -55,7 +59,7 @@ export function SizingCard({ sizing }: SizingCardProps) {
               </div>
               <div>
                 <p className="text-xs text-zinc-500">Max Allowed</p>
-                <p className="font-mono text-sm text-zinc-200">{safeNum(sizing.max_allowed).toFixed(2)} shares</p>
+                <p className="font-mono text-sm text-zinc-200">${safeNum(sizing.max_allowed).toFixed(2)}</p>
               </div>
             </div>
 

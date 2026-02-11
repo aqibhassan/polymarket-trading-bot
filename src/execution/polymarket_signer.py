@@ -19,7 +19,7 @@ from src.models.order import Order, OrderSide, OrderStatus, OrderType
 logger = get_logger(__name__)
 
 _POLYGON_CHAIN_ID = 137
-_SIGNATURE_TYPE = 1
+_SIGNATURE_TYPE = 2  # Gnosis Safe proxy (matches user's Polymarket account)
 # Rate limit: 10 requests per second with safety margin applied by TokenBucketRateLimiter
 _DEFAULT_MAX_TOKENS = 10
 _DEFAULT_REFILL_RATE = 10.0
@@ -277,24 +277,32 @@ class PolymarketLiveTrader:
         return self._orders.get(order_id)
 
     async def get_positions(self) -> list[dict[str, Any]]:
-        """Fetch current open positions from the CLOB API."""
+        """Fetch current open orders from the CLOB API."""
         await self._rate_limiter.wait()
         try:
-            positions: list[dict[str, Any]] = self._clob_client.get_positions()
-            logger.info("live_positions_fetched", count=len(positions))
-            return positions
+            orders: list[dict[str, Any]] = self._clob_client.get_orders()
+            logger.info("live_positions_fetched", count=len(orders))
+            return orders
         except Exception as exc:
             logger.error("live_positions_fetch_failed", error=str(exc))
             return []
 
     async def get_balance(self) -> Decimal:
         """Fetch USDC balance from the CLOB API."""
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
         await self._rate_limiter.wait()
         try:
-            balance_resp = self._clob_client.get_balance()
-            balance = Decimal(str(balance_resp))
+            resp = self._clob_client.get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL),
+            )
+            # Response is a dict with "balance" key (raw USDC with 6 decimals)
+            balance_str = resp.get("balance", "0") if isinstance(resp, dict) else str(resp)
+            balance_raw = Decimal(balance_str)
+            # Convert from 6-decimal raw to human-readable USDC
+            balance = balance_raw / Decimal("1000000")
             logger.info("live_balance_fetched", balance=str(balance))
             return balance
         except Exception as exc:
-            logger.error("live_balance_fetch_failed", error=str(exc))
+            logger.error("live_balance_fetch_failed", error=str(exc)[:200])
             return Decimal("0")

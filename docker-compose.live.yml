@@ -1,5 +1,5 @@
 # Live trading overlay — use with:
-#   docker compose -f docker-compose.prod.yml -f docker-compose.live.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.live.yml up -d
 #
 # Requires POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER_ADDRESS in .env
 # WARNING: This runs real trades with real funds.
@@ -26,7 +26,6 @@ services:
     restart: always
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - certbot_conf:/etc/letsencrypt:ro
@@ -34,8 +33,6 @@ services:
     depends_on:
       - dashboard
       - grafana
-    networks:
-      - frontend
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s

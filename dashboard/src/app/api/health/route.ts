@@ -60,14 +60,14 @@ export async function GET() {
   // Get last trade time from ClickHouse → compute idle time
   try {
     const result = await clickhouse.query({
-      query: 'SELECT max(exit_time) AS last_exit FROM mvhe.trades',
+      query: 'SELECT max(exit_time) AS last_exit, count() AS cnt FROM mvhe.trades',
       format: 'JSONEachRow',
     });
-    const rows = await result.json<{ last_exit: string }>();
-    if (rows.length > 0 && rows[0].last_exit) {
+    const rows = await result.json<{ last_exit: string; cnt: string }>();
+    if (rows.length > 0 && Number(rows[0].cnt) > 0 && rows[0].last_exit) {
       status.last_trade_time = rows[0].last_exit;
       const lastExit = new Date(rows[0].last_exit).getTime();
-      if (!isNaN(lastExit)) {
+      if (!isNaN(lastExit) && lastExit > 0) {
         status.idle_since_s = Math.round((Date.now() - lastExit) / 1000);
       }
     }

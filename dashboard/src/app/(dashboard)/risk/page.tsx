@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import type { Trade } from '@/lib/types/trade';
 
-const INITIAL_BALANCE = 10000;
+const DEFAULT_INITIAL_BALANCE = 10000;
 
 export default function RiskPage() {
   const [killSwitch, setKillSwitch] = useState(false);
@@ -16,23 +16,30 @@ export default function RiskPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [ksRes, trRes, eqRes] = await Promise.all([
+      const [ksRes, trRes, eqRes, balRes] = await Promise.all([
         fetch('/api/kill-switch'),
         fetch('/api/trades?limit=1000'),
         fetch('/api/equity-curve'),
+        fetch('/api/balance'),
       ]);
       const ksData = await ksRes.json();
       const trData = await trRes.json();
       const eqData = await eqRes.json();
+      const balData = await balRes.json();
       setKillSwitch(ksData.active || false);
       setTrades(trData.trades || []);
 
+      // Use real initial balance from Redis, fallback to default
+      const initBal = balData?.initial_balance && Number(balData.initial_balance) > 0
+        ? Number(balData.initial_balance)
+        : DEFAULT_INITIAL_BALANCE;
+
       // Compute peak-to-trough drawdown from ClickHouse equity curve
       const curve: Array<{ cumulative_pnl: number }> = eqData.data || [];
-      let peak = INITIAL_BALANCE;
+      let peak = initBal;
       let maxDd = 0;
       for (const pt of curve) {
-        const equity = INITIAL_BALANCE + Number(pt.cumulative_pnl);
+        const equity = initBal + Number(pt.cumulative_pnl);
         if (equity > peak) peak = equity;
         const dd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
         if (dd > maxDd) maxDd = dd;
