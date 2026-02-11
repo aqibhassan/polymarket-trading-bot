@@ -399,3 +399,140 @@ class PolymarketRedeemer:
             return wei / 1e18
         except Exception:
             return 0.0
+
+    # ------------------------------------------------------------------
+    # Retroactive sweep — redeem ALL settled positions
+    # ------------------------------------------------------------------
+
+    async def sweep_all_settled(self, lookback_hours: int = 48) -> list[str]:
+        """Scan for all unredeemed settled BTC 15m positions and redeem them.
+
+        Queries the Gamma API for recently settled BTC 15-minute markets,
+        checks CTF balances for both YES and NO tokens, and redeems any
+        positions with balance > 0.
+
+        Args:
+            lookback_hours: How many hours back to scan for settled markets.
+
+        Returns:
+            List of successful redemption transaction hashes.
+        """
+        tx_hashes: list[str] = []
+        try:
+            markets = await self._fetch_settled_btc_markets(lookback_hours)
+            logger.info(
+                "sweep.markets_found",
+                count=len(markets),
+                lookback_hours=lookback_hours,
+            )
+
+            for market in markets:
+                condition_id = market.get("condition_id", "")
+                yes_token_id = market.get("yes_token_id", "")
+                no_token_id = market.get("no_token_id", "")
+                question = market.get("question", "")[:60]
+
+                if not condition_id:
+                    continue
+
+                # Check both YES and NO token balances
+                for label, token_id in [("YES", yes_token_id), ("NO", no_token_id)]:
+                    if not token_id:
+                        continue
+                    try:
+                        balance = await self._check_ctf_balance(token_id)
+                        if balance > 0:
+                            logger.info(
+                                "sweep.found_unredeemed",
+                                condition_id=condition_id[:16],
+                                token=label,
+                                token_id=token_id[:16],
+                                balance=balance,
+                                question=question,
+                            )
+                            tx_hash = await self.redeem_positions(
+                                condition_id=condition_id,
+                                token_id=token_id,
+                            )
+                            if tx_hash:
+                                tx_hashes.append(tx_hash)
+                                logger.info(
+                                    "sweep.redeemed",
+                                    tx_hash=tx_hash,
+                                    condition_id=condition_id[:16],
+                                    token=label,
+                                    balance=balance,
+                                )
+                                # Small delay between redemptions
+                                await asyncio.sleep(3)
+                    except Exception as exc:
+                        logger.warning(
+                            "sweep.token_check_failed",
+                            condition_id=condition_id[:16],
+                            token=label,
+                            error=str(exc)[:100],
+                        )
+
+        except Exception as exc:
+            logger.error("sweep.failed", error=str(exc)[:200])
+
+        logger.info("sweep.complete", redeemed=len(tx_hashes))
+        return tx_hashes
+
+    async def _fetch_settled_btc_markets(
+        self, lookback_hours: int = 48,
+    ) -> list[dict[str, str]]:
+        """Fetch recently settled BTC 15-minute markets from the Gamma API."""
+        results: list[dict[str, str]] = []
+        gamma_url = "https://gamma-api.polymarket.com"
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            # Query for closed BTC markets
+            resp = await client.get(
+                f"{gamma_url}/markets",
+                params={
+                    "closed": "true",
+                    "limit": 100,
+                },
+            )
+            resp.raise_for_status()
+            markets = resp.json()
+
+        for m in markets:
+            question = m.get("question", "")
+            q_lower = question.lower()
+
+            # Filter for BTC 15-minute candle markets only
+            if "btc" not in q_lower and "bitcoin" not in q_lower:
+                continue
+            if "15" not in q_lower and "minute" not in q_lower:
+                # Also accept "Up or Down" pattern
+                if "up or down" not in q_lower:
+                    continue
+
+            condition_id = m.get("condition_id", "") or m.get("conditionId", "")
+            if not condition_id:
+                continue
+
+            # Extract token IDs
+            tokens = m.get("tokens", [])
+            yes_token_id = ""
+            no_token_id = ""
+            for t in tokens:
+                outcome = t.get("outcome", "").upper()
+                if outcome == "YES":
+                    yes_token_id = t.get("token_id", "")
+                elif outcome == "NO":
+                    no_token_id = t.get("token_id", "")
+
+            if not yes_token_id and not no_token_id:
+                continue
+
+            results.append({
+                "condition_id": condition_id,
+                "yes_token_id": yes_token_id,
+                "no_token_id": no_token_id,
+                "question": question,
+            })
+
+        return results

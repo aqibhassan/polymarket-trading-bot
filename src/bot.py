@@ -589,6 +589,31 @@ class BotOrchestrator:
                 logger.info("redeemer.matic_balance", matic=f"{matic:.4f}")
                 if matic < 0.01:
                     logger.warning("redeemer.low_matic", matic=f"{matic:.4f}")
+
+                # Sweep all past unclaimed settled positions at startup
+                if matic >= 0.01:
+                    try:
+                        sweep_hashes = await redeemer.sweep_all_settled(
+                            lookback_hours=72,
+                        )
+                        if sweep_hashes:
+                            logger.info(
+                                "startup_sweep.redeemed",
+                                count=len(sweep_hashes),
+                                tx_hashes=sweep_hashes[:5],
+                            )
+                            # Refresh balance after sweep
+                            if live_trader is not None:
+                                await asyncio.sleep(10)
+                                synced = await live_trader.get_balance()
+                                if synced is not None and synced > 0:
+                                    initial_balance = synced
+                                    logger.info(
+                                        "startup_sweep.balance_refreshed",
+                                        balance=str(initial_balance),
+                                    )
+                    except Exception:
+                        logger.warning("startup_sweep.failed", exc_info=True)
             except Exception:
                 logger.warning("redeemer.init_failed", exc_info=True)
 
@@ -989,6 +1014,7 @@ class BotOrchestrator:
                             logger.info(
                                 "swing_market_found",
                                 market_id=active_market.market_id,
+                                condition_id=active_market.condition_id[:16] if active_market.condition_id else "empty",
                                 question=active_market.question[:80] if active_market.question else "",
                                 yes_price=str(active_market.yes_price),
                                 candidates=len(active_markets),
@@ -1383,7 +1409,10 @@ class BotOrchestrator:
                             last_fee_cost = costs.fee_cost
                             last_token_id = token_id
                             last_market_id = market_id
-                            last_condition_id = active_market.condition_id if active_market else ""
+                            last_condition_id = (
+                                (active_market.condition_id or active_market.market_id)
+                                if active_market else market_id
+                            )
                             last_signal_details_str = last_signal_details
 
                             # Persist position to Redis (survives restart)
