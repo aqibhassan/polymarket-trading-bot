@@ -813,6 +813,12 @@ class BotOrchestrator:
                                 reason="redeeming on-chain via CTF",
                             )
                             # Auto-claim: redeem settled tokens on-chain
+                            logger.info(
+                                "live_redeem_check",
+                                has_redeemer=redeemer is not None,
+                                condition_id=last_condition_id[:16] if last_condition_id else "none",
+                                token_id=last_token_id[:16] if last_token_id else "none",
+                            )
                             if redeemer is not None and last_condition_id and last_token_id:
                                 try:
                                     tx_hash = await redeemer.redeem_positions(
@@ -1548,6 +1554,12 @@ class BotOrchestrator:
                                 reason="redeeming on-chain via CTF",
                             )
                             # Auto-claim: redeem settled tokens on-chain
+                            logger.info(
+                                "live_redeem_check",
+                                has_redeemer=redeemer is not None,
+                                condition_id=last_condition_id[:16] if last_condition_id else "none",
+                                token_id=last_token_id[:16] if last_token_id else "none",
+                            )
                             if redeemer is not None and last_condition_id and last_token_id:
                                 try:
                                     tx_hash = await redeemer.redeem_positions(
