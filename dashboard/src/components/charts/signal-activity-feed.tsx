@@ -20,6 +20,7 @@ const REASON_LABELS: Record<string, string> = {
   clob_entry_price_too_high: 'CLOB price too high',
   max_clob_entry_price: 'Price exceeds max',
   no_clob_price: 'No CLOB price available',
+  gtc_pending: 'GTC order placed (unfilled)',
 };
 
 function VoteSummary({ votes }: { votes: Record<string, number> }) {

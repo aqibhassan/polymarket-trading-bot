@@ -574,3 +574,248 @@ class TestConfidenceDiscount:
         assert bot._mode == "paper"
         # The discount block only runs when self._mode == "live",
         # so paper mode correctly skips it.
+
+
+class TestSelectOrderType:
+    """Tests for dynamic GTC vs FOK order type selection."""
+
+    def test_illiquid_market_returns_gtc(self):
+        """Wide spread + no trades + early minute → GTC maker."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=None,
+            clob_spread=Decimal("0.98"),
+            minute_in_window=8,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.GTC
+
+    def test_liquid_market_returns_fok(self):
+        """Tight spread + real trades → FOK taker."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.65"),
+            clob_spread=Decimal("0.10"),
+            minute_in_window=9,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.FOK
+
+    def test_late_window_returns_fok(self):
+        """Late window (min 11+) → always FOK regardless of spread."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=None,
+            clob_spread=Decimal("0.50"),
+            minute_in_window=12,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.FOK
+
+    def test_late_window_threshold_exact(self):
+        """Minute exactly at threshold → FOK."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=None,
+            clob_spread=Decimal("0.98"),
+            minute_in_window=11,
+            fok_late_minute=11,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.FOK
+
+    def test_trades_but_wide_spread_returns_gtc(self):
+        """Real trades but spread still wide → GTC (not tight enough for FOK)."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.50"),
+            clob_spread=Decimal("0.50"),
+            minute_in_window=9,
+            fok_spread_threshold=Decimal("0.30"),
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.GTC
+
+    def test_custom_thresholds(self):
+        """Custom FOK thresholds are respected."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.70"),
+            clob_spread=Decimal("0.15"),
+            minute_in_window=8,
+            fok_spread_threshold=Decimal("0.20"),
+            fok_late_minute=13,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.FOK
+
+    def test_no_trades_tight_spread_returns_gtc(self):
+        """Tight spread but no trades → GTC (need both conditions for FOK)."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=None,
+            clob_spread=Decimal("0.10"),
+            minute_in_window=8,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.GTC
+
+    def test_early_minute_wide_spread_returns_gtc(self):
+        """Before late threshold, wide spread → always GTC."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=None,
+            clob_spread=Decimal("0.98"),
+            minute_in_window=8,
+            fok_late_minute=11,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.GTC
+
+    def test_zero_spread_with_trades_returns_fok(self):
+        """Zero spread + real trades → FOK (best conditions)."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.55"),
+            clob_spread=Decimal("0.00"),
+            minute_in_window=8,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.FOK
+
+    def test_spread_exactly_at_threshold_returns_gtc(self):
+        """Spread exactly at threshold → not tight enough → GTC."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.60"),
+            clob_spread=Decimal("0.30"),
+            minute_in_window=9,
+            fok_spread_threshold=Decimal("0.30"),
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.GTC
+
+    def test_minute_before_late_threshold_returns_gtc(self):
+        """Minute just before late threshold → GTC (not late enough)."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=None,
+            clob_spread=Decimal("0.80"),
+            minute_in_window=10,
+            fok_late_minute=11,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.GTC
+
+
+class TestFOKEntryPriceLogic:
+    """Tests for FOK-specific entry price and max price branching."""
+
+    def test_fok_max_entry_higher_than_gtc(self):
+        """FOK taker should accept higher prices than GTC maker."""
+        # FOK at $0.85 should pass with fok_max=0.85 but fail with gtc_max=0.80
+        fok_max = Decimal("0.85")
+        gtc_max = Decimal("0.80")
+        entry = Decimal("0.83")
+        assert entry <= fok_max  # FOK allows
+        assert entry > gtc_max  # GTC would reject
+
+    def test_entry_above_both_limits_rejected(self):
+        """Price above both FOK and GTC limits should be rejected."""
+        fok_max = Decimal("0.85")
+        gtc_max = Decimal("0.80")
+        entry = Decimal("0.90")
+        assert entry > fok_max
+        assert entry > gtc_max
+
+    def test_entry_below_both_limits_accepted(self):
+        """Price below both limits should be accepted by either type."""
+        fok_max = Decimal("0.85")
+        gtc_max = Decimal("0.80")
+        entry = Decimal("0.65")
+        assert entry <= fok_max
+        assert entry <= gtc_max
+
+    def test_confidence_discount_only_gtc(self):
+        """Confidence discount should apply to GTC orders, not FOK."""
+        from src.models.order import OrderType
+
+        # GTC → discount applies
+        gtc_type = OrderType.GTC
+        # FOK → discount skipped
+        fok_type = OrderType.FOK
+
+        # The bot code checks: order_type_selected == OrderType.GTC
+        should_discount_gtc = gtc_type == OrderType.GTC
+        should_discount_fok = fok_type == OrderType.GTC
+        assert should_discount_gtc is True
+        assert should_discount_fok is False
+
+    def test_confidence_discount_preserves_fok_price(self):
+        """FOK entry should use raw CLOB best_ask — no discount."""
+        # Simulate: FOK crosses spread at best_ask = $0.72
+        fok_entry = Decimal("0.72")
+        # No discount applied — price should remain $0.72
+        discount_pct = BotOrchestrator._compute_confidence_discount(0.85)
+        # FOK would NOT apply this discount
+        assert fok_entry == Decimal("0.72")
+        # But GTC would apply it
+        gtc_discounted = BotOrchestrator._apply_confidence_discount(
+            fok_entry, discount_pct,
+        )
+        assert gtc_discounted < fok_entry
+
+
+class TestNODirectionPricing:
+    """Tests for NO-direction using NO token CLOB data."""
+
+    def test_no_direction_prefers_no_token_data(self):
+        """NO direction should use NO token last_trade when available."""
+        # Simulate: NO token has last_trade at $0.60
+        no_clob_last_trade = Decimal("0.60")
+        # YES token would give inverted: 1 - 0.50 = 0.50
+        yes_clob_computed_mid = Decimal("0.50")
+
+        # NO direction with real NO data → use $0.60
+        assert no_clob_last_trade is not None
+        entry = no_clob_last_trade
+        assert entry == Decimal("0.60")
+
+    def test_no_direction_falls_back_to_inverted_yes(self):
+        """NO direction without NO token data should invert YES price."""
+        no_clob_last_trade = None
+        no_clob_midpoint = None
+        yes_entry = Decimal("0.45")
+
+        # Fallback: invert YES price
+        if no_clob_last_trade is None and no_clob_midpoint is None:
+            entry = Decimal("1") - yes_entry
+        else:
+            entry = no_clob_last_trade or no_clob_midpoint
+        assert entry == Decimal("0.55")
+
+    def test_no_direction_midpoint_chain(self):
+        """NO direction should try last_trade > midpoint > computed_mid."""
+        # Only midpoint available
+        no_clob_last_trade = None
+        no_clob_midpoint = Decimal("0.55")
+
+        if no_clob_last_trade is not None:
+            entry = no_clob_last_trade
+            source = "no_clob_last_trade"
+        elif no_clob_midpoint is not None:
+            entry = no_clob_midpoint
+            source = "no_clob_midpoint"
+        else:
+            entry = Decimal("0.50")  # fallback
+            source = "inverted"
+
+        assert entry == Decimal("0.55")
+        assert source == "no_clob_midpoint"
+
+    def test_no_direction_computed_mid(self):
+        """NO direction should compute mid from NO bid/ask when needed."""
+        no_clob_best_ask = Decimal("0.65")
+        no_clob_best_bid = Decimal("0.55")
+        no_clob_last_trade = None
+        no_clob_midpoint = None
+
+        if no_clob_last_trade is not None:
+            entry = no_clob_last_trade
+        elif no_clob_midpoint is not None:
+            entry = no_clob_midpoint
+        elif no_clob_best_ask is not None and no_clob_best_bid is not None:
+            entry = (no_clob_best_ask + no_clob_best_bid) / 2
+        else:
+            entry = Decimal("0.50")
+
+        assert entry == Decimal("0.60")

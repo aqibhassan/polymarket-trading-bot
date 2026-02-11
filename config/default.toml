@@ -122,7 +122,12 @@ max_spread_cents = 0.05
 [execution.pricing]
 use_clob_pricing = true
 max_clob_entry_price = 0.80
-max_clob_spread = 0.90
+max_clob_spread = 0.50
+
+# FOK (Fill-Or-Kill) taker execution: cross spread when liquidity appears
+fok_spread_threshold = 0.30      # Spread < 30% → eligible for FOK taker
+fok_late_minute_threshold = 11   # After minute 11, always attempt FOK
+fok_max_entry_price = 0.85       # FOK taker max entry (more permissive than GTC 0.80)
 
 [bot]
 tick_interval_seconds = 5

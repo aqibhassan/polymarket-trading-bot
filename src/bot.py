@@ -278,6 +278,32 @@ class BotOrchestrator:
         return max(discounted, Decimal("0.01"))
 
     @staticmethod
+    def _select_order_type(
+        clob_last_trade: Decimal | None,
+        clob_spread: Decimal,
+        minute_in_window: int,
+        *,
+        fok_spread_threshold: Decimal = Decimal("0.30"),
+        fok_late_minute: int = 11,
+    ) -> "OrderType":
+        """Choose GTC (maker) or FOK (taker) based on CLOB state.
+
+        FOK when:
+          - Real trades exist AND spread < threshold (liquid market)
+          - OR minute >= late threshold (last chance, cross the spread)
+        GTC otherwise (rest as maker when market is illiquid).
+        """
+        from src.models.order import OrderType
+
+        has_real_trades = clob_last_trade is not None
+        spread_tight = clob_spread < fok_spread_threshold
+        late_window = minute_in_window >= fok_late_minute
+
+        if (has_real_trades and spread_tight) or late_window:
+            return OrderType.FOK
+        return OrderType.GTC
+
+    @staticmethod
     def _window_start_ts(epoch_s: int) -> int:
         """Align an epoch timestamp to the enclosing 15-minute boundary."""
         return epoch_s - (epoch_s % 900)
@@ -561,7 +587,18 @@ class BotOrchestrator:
             str(self._config.get("execution.pricing.max_clob_entry_price", 0.80))
         )
         max_clob_spread = Decimal(
-            str(self._config.get("execution.pricing.max_clob_spread", 0.90))
+            str(self._config.get("execution.pricing.max_clob_spread", 0.50))
+        )
+
+        # FOK (Fill-Or-Kill) taker execution config
+        fok_spread_threshold = Decimal(
+            str(self._config.get("execution.pricing.fok_spread_threshold", 0.30))
+        )
+        fok_late_minute = int(
+            self._config.get("execution.pricing.fok_late_minute_threshold", 11)
+        )
+        fok_max_entry_price = Decimal(
+            str(self._config.get("execution.pricing.fok_max_entry_price", 0.85))
         )
 
         # --- Component setup ---
@@ -795,13 +832,15 @@ class BotOrchestrator:
         pending_gtc_oid: str | None = None  # Exchange OID of resting GTC
         pending_gtc_internal_id: str | None = None
         pending_gtc_position: bool = False  # True while GTC resting, not yet MATCHED
+        gtc_poll_counter: int = 0  # Throttle mid-tick GTC status polling
         last_tick_yes_price = Decimal("0.5")
         last_market_id: str | None = None
         last_reset_date = datetime.now(tz=UTC).date()
         last_signal_details_str: str = ""
         last_clob_entry_price: Decimal | None = None  # CLOB price at signal time
         last_sigmoid_entry_price: Decimal | None = None  # Sigmoid price at signal time
-        current_subscribed_token: str | None = None  # Token currently subscribed on poly WS
+        current_subscribed_yes: str | None = None  # YES token subscribed on poly WS
+        current_subscribed_no: str | None = None  # NO token subscribed on poly WS
         last_clob_snapshot_minute: int = -1  # Track per-minute CLOB snapshots
         window_activity_published = False  # one event per 15-min window
         window_last_skip_eval: dict[str, Any] = {}  # accumulate last skip reason
@@ -1347,18 +1386,29 @@ class BotOrchestrator:
                 yes_token_id = active_market.yes_token_id
                 no_token_id = active_market.no_token_id
 
-                # Subscribe to Polymarket WS for real-time CLOB prices
-                if yes_token_id and yes_token_id != current_subscribed_token:
-                    if current_subscribed_token:
+                # Subscribe to Polymarket WS for real-time CLOB prices (both YES + NO)
+                if yes_token_id and yes_token_id != current_subscribed_yes:
+                    if current_subscribed_yes:
                         try:
-                            await poly_ws_feed.unsubscribe(current_subscribed_token)
+                            await poly_ws_feed.unsubscribe(current_subscribed_yes)
                         except Exception:
-                            logger.debug("poly_ws_unsubscribe_failed", exc_info=True)
+                            logger.debug("poly_ws_unsubscribe_yes_failed", exc_info=True)
                     try:
                         await poly_ws_feed.subscribe(yes_token_id)
-                        current_subscribed_token = yes_token_id
+                        current_subscribed_yes = yes_token_id
                     except Exception:
-                        logger.debug("poly_ws_subscribe_failed", exc_info=True)
+                        logger.debug("poly_ws_subscribe_yes_failed", exc_info=True)
+                if no_token_id and no_token_id != current_subscribed_no:
+                    if current_subscribed_no:
+                        try:
+                            await poly_ws_feed.unsubscribe(current_subscribed_no)
+                        except Exception:
+                            logger.debug("poly_ws_unsubscribe_no_failed", exc_info=True)
+                    try:
+                        await poly_ws_feed.subscribe(no_token_id)
+                        current_subscribed_no = no_token_id
+                    except Exception:
+                        logger.debug("poly_ws_subscribe_no_failed", exc_info=True)
 
                 market_state = MarketState(
                     market_id=market_id,
@@ -1410,6 +1460,26 @@ class BotOrchestrator:
                         clob_best_ask = orderbook.asks[0].price
                         clob_best_bid = orderbook.bids[0].price if orderbook.bids else None
 
+                # --- Read NO token CLOB state for NO-direction trades ---
+                no_clob_best_ask: Decimal | None = None
+                no_clob_best_bid: Decimal | None = None
+                no_clob_midpoint: Decimal | None = None
+                no_clob_last_trade: Decimal | None = None
+                if use_clob_pricing and no_token_id:
+                    no_clob_state = poly_ws_feed.get_clob_state(no_token_id)
+                    no_clob_fresh = (
+                        no_clob_state is not None
+                        and no_clob_state.best_ask is not None
+                        and no_clob_state.last_updated is not None
+                        and (datetime.now(tz=UTC) - no_clob_state.last_updated).total_seconds() < 60
+                    )
+                    if no_clob_fresh:
+                        assert no_clob_state is not None
+                        no_clob_best_ask = no_clob_state.best_ask
+                        no_clob_best_bid = no_clob_state.best_bid
+                        no_clob_midpoint = no_clob_state.midpoint
+                        no_clob_last_trade = no_clob_state.last_trade_price
+
                 # Log CLOB vs sigmoid comparison every tick
                 if clob_best_ask is not None:
                     logger.info(
@@ -1445,6 +1515,132 @@ class BotOrchestrator:
                         })
                     except Exception:
                         logger.debug("clob_snapshot_insert_failed", exc_info=True)
+
+                # --- Mid-tick GTC fill check (every 3rd tick ≈ 15s) ---
+                # Detect fills, cancellations, or upgrade GTC→FOK when
+                # liquidity appears mid-window.
+                gtc_poll_counter += 1
+                if (
+                    pending_gtc_oid
+                    and bridge.mode == "live"
+                    and bridge._live_trader
+                    and gtc_poll_counter % 3 == 0
+                ):
+                    try:
+                        _gtc_resp = bridge._live_trader._clob_client.get_order(
+                            pending_gtc_oid,
+                        )
+                        _gtc_st = (
+                            _gtc_resp.get("status", "")
+                            if isinstance(_gtc_resp, dict)
+                            else ""
+                        )
+                        if _gtc_st == "MATCHED":
+                            _raw = _gtc_resp.get(
+                                "size_matched",
+                                _gtc_resp.get("sizeMatched", "0"),
+                            )
+                            _actual = (
+                                Decimal(str(_raw)) if _raw else last_position_size
+                            )
+                            if _actual and _actual > 0 and last_entry_price is not None:
+                                last_position_size = _actual
+                                last_fee_cost = CostCalculator.polymarket_fee(
+                                    _actual * last_entry_price,
+                                    last_entry_price,
+                                )
+                            has_open_position = True
+                            pending_gtc_oid = None
+                            pending_gtc_internal_id = None
+                            pending_gtc_position = False
+                            trade_count += 1
+                            logger.info(
+                                "gtc_filled_mid_tick",
+                                minute=minute_in_window,
+                                fill_size=str(_actual),
+                            )
+                        elif _gtc_st in ("CANCELLED", "EXPIRED"):
+                            pending_gtc_oid = None
+                            pending_gtc_internal_id = None
+                            pending_gtc_position = False
+                            logger.info(
+                                "gtc_cancelled_mid_tick", status=_gtc_st,
+                            )
+                        else:
+                            # Still resting — check if we should upgrade to FOK
+                            _clob_sp = (
+                                (clob_best_ask - clob_best_bid)
+                                if clob_best_ask is not None
+                                and clob_best_bid is not None
+                                else Decimal("1")
+                            )
+                            _new_type = self._select_order_type(
+                                clob_last_trade=clob_last_trade,
+                                clob_spread=_clob_sp,
+                                minute_in_window=minute_in_window,
+                                fok_spread_threshold=fok_spread_threshold,
+                                fok_late_minute=fok_late_minute,
+                            )
+                            if _new_type == OrderType.FOK:
+                                _cancel_id = (
+                                    pending_gtc_internal_id or pending_gtc_oid
+                                )
+                                _cancelled = await bridge.cancel_order(_cancel_id)
+                                if _cancelled and last_entry_side in ("YES", "NO"):
+                                    # Price for FOK: use appropriate token side
+                                    _fok_price: Decimal | None = None
+                                    if last_entry_side == "YES":
+                                        _fok_price = clob_best_ask
+                                    elif last_entry_side == "NO":
+                                        _fok_price = no_clob_best_ask or (
+                                            Decimal("1") - clob_best_bid
+                                            if clob_best_bid
+                                            else None
+                                        )
+                                    if (
+                                        _fok_price is not None
+                                        and _fok_price <= fok_max_entry_price
+                                        and last_token_id
+                                        and last_market_id
+                                    ):
+                                        _fok_order = await bridge.submit_order(
+                                            market_id=last_market_id,
+                                            token_id=last_token_id,
+                                            side=OrderSide.BUY,
+                                            order_type=OrderType.FOK,
+                                            price=_fok_price,
+                                            size=last_position_size
+                                            or Decimal("0"),
+                                            strategy_id=self._strategy.name,
+                                        )
+                                        if (
+                                            _fok_order.status
+                                            == OrderStatus.FILLED
+                                        ):
+                                            has_open_position = True
+                                            trade_count += 1
+                                            last_entry_price = (
+                                                _fok_order.avg_fill_price
+                                                or _fok_price
+                                            )
+                                            logger.info(
+                                                "gtc_upgraded_to_fok",
+                                                price=str(_fok_price),
+                                                minute=minute_in_window,
+                                            )
+                                        else:
+                                            logger.info(
+                                                "fok_upgrade_not_filled",
+                                                price=str(_fok_price),
+                                                status=_fok_order.status.value,
+                                            )
+                                    pending_gtc_oid = None
+                                    pending_gtc_internal_id = None
+                                    pending_gtc_position = False
+                    except Exception:
+                        logger.debug(
+                            "mid_tick_gtc_check_failed", exc_info=True,
+                        )
 
                 # --- Generate signals ---
                 signals = self._strategy.generate_signals(
@@ -1498,45 +1694,77 @@ class BotOrchestrator:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position and not pending_gtc_position:
                         sigmoid_price = sig.entry_price or yes_price
 
-                        # Reject entries when CLOB spread is too wide (no real liquidity).
-                        # A 0.01/0.99 spread means placeholder orders, not a real market.
+                        # Compute CLOB spread for order-type and gating decisions.
                         clob_spread = (
                             (clob_best_ask - clob_best_bid)
                             if clob_best_ask is not None and clob_best_bid is not None
                             else Decimal("1")
                         )
-                        if clob_last_trade is None and clob_spread > max_clob_spread:
-                            logger.info(
-                                "clob_spread_too_wide",
-                                spread=str(clob_spread),
-                                max_allowed=str(max_clob_spread),
-                                best_bid=str(clob_best_bid),
-                                best_ask=str(clob_best_ask),
-                                minute=minute_in_window,
-                            )
-                            continue  # Skip — no real liquidity
 
-                        # ALWAYS use real Polymarket CLOB price — never sigmoid.
-                        # Priority: last_trade > midpoint > REST orderbook midpoint
+                        # Select order type: GTC (maker) or FOK (taker)
+                        order_type_selected = (
+                            self._select_order_type(
+                                clob_last_trade=clob_last_trade,
+                                clob_spread=clob_spread,
+                                minute_in_window=minute_in_window,
+                                fok_spread_threshold=fok_spread_threshold,
+                                fok_late_minute=fok_late_minute,
+                            )
+                            if bridge.mode == "live"
+                            else OrderType.LIMIT
+                        )
+
+                        # For GTC orders: reject when spread is too wide (no real liquidity).
+                        # FOK orders skip this — they'll cross the spread as takers.
+                        if order_type_selected == OrderType.GTC:
+                            if clob_last_trade is None and clob_spread > max_clob_spread:
+                                logger.info(
+                                    "clob_spread_too_wide",
+                                    spread=str(clob_spread),
+                                    max_allowed=str(max_clob_spread),
+                                    best_bid=str(clob_best_bid),
+                                    best_ask=str(clob_best_ask),
+                                    minute=minute_in_window,
+                                )
+                                continue  # Skip — no real liquidity for GTC
+
+                        # --- Entry pricing ---
+                        # For NO direction: use real NO token CLOB data if available.
+                        # For YES direction (or fallback): use YES token CLOB data.
                         entry_price: Decimal | None = None
                         price_source = "none"
-                        if clob_last_trade is not None:
-                            entry_price = clob_last_trade
-                            price_source = "clob_last_trade"
-                        elif clob_midpoint is not None:
-                            entry_price = clob_midpoint
-                            price_source = "clob_midpoint"
-                        elif clob_best_ask is not None and clob_best_bid is not None:
-                            entry_price = (clob_best_ask + clob_best_bid) / 2
-                            price_source = "clob_computed_mid"
-                        elif orderbook.bids and orderbook.asks:
-                            # REST orderbook fallback
-                            entry_price = (orderbook.bids[0].price + orderbook.asks[0].price) / 2
-                            price_source = "rest_orderbook_mid"
-                        elif clob_best_ask is not None:
-                            # Last resort: use best_ask only
-                            entry_price = clob_best_ask
-                            price_source = "clob_best_ask"
+
+                        if sig.direction == Side.NO and no_clob_last_trade is not None:
+                            entry_price = no_clob_last_trade
+                            price_source = "no_clob_last_trade"
+                        elif sig.direction == Side.NO and no_clob_midpoint is not None:
+                            entry_price = no_clob_midpoint
+                            price_source = "no_clob_midpoint"
+                        elif sig.direction == Side.NO and no_clob_best_ask is not None and no_clob_best_bid is not None:
+                            entry_price = (no_clob_best_ask + no_clob_best_bid) / 2
+                            price_source = "no_clob_computed_mid"
+                        elif sig.direction == Side.YES or sig.direction == Side.NO:
+                            # YES direction, or NO fallback to inverted YES
+                            if clob_last_trade is not None:
+                                entry_price = clob_last_trade
+                                price_source = "clob_last_trade"
+                            elif clob_midpoint is not None:
+                                entry_price = clob_midpoint
+                                price_source = "clob_midpoint"
+                            elif clob_best_ask is not None and clob_best_bid is not None:
+                                entry_price = (clob_best_ask + clob_best_bid) / 2
+                                price_source = "clob_computed_mid"
+                            elif orderbook.bids and orderbook.asks:
+                                entry_price = (orderbook.bids[0].price + orderbook.asks[0].price) / 2
+                                price_source = "rest_orderbook_mid"
+                            elif clob_best_ask is not None:
+                                entry_price = clob_best_ask
+                                price_source = "clob_best_ask"
+
+                            # Invert YES price for NO direction (fallback)
+                            if sig.direction == Side.NO and entry_price is not None:
+                                entry_price = Decimal("1") - entry_price
+                                price_source = f"{price_source}_inverted_for_NO"
 
                         if entry_price is None or entry_price <= 0:
                             logger.warning(
@@ -1546,11 +1774,16 @@ class BotOrchestrator:
                             )
                             continue  # Skip — no real exchange price
 
-                        # For NO direction: invert the YES-side CLOB price.
-                        # CLOB data comes from YES token; NO token price ≈ 1 - YES price.
-                        if sig.direction == Side.NO:
-                            entry_price = Decimal("1") - entry_price
-                            price_source = f"{price_source}_inverted_for_NO"
+                        # FOK price override: use best_ask to cross the spread.
+                        # The signer does this too, but we want the correct price
+                        # for sizing and max-price validation.
+                        if order_type_selected == OrderType.FOK:
+                            if sig.direction == Side.YES and clob_best_ask is not None:
+                                entry_price = clob_best_ask
+                                price_source = "clob_best_ask_fok"
+                            elif sig.direction == Side.NO and no_clob_best_ask is not None:
+                                entry_price = no_clob_best_ask
+                                price_source = "no_clob_best_ask_fok"
 
                         logger.debug(
                             "entry_price_source",
@@ -1558,14 +1791,22 @@ class BotOrchestrator:
                             source=price_source,
                             sigmoid=str(sigmoid_price),
                             direction=sig.direction.value,
+                            order_type=order_type_selected.value,
                         )
 
-                        # Safety gate: reject entries where CLOB price is too high (poor R:R)
-                        if entry_price > max_clob_entry_price:
+                        # Safety gate: reject entries where CLOB price is too high.
+                        # FOK taker has a more permissive limit (pays more for guaranteed fill).
+                        _effective_max = (
+                            fok_max_entry_price
+                            if order_type_selected == OrderType.FOK
+                            else max_clob_entry_price
+                        )
+                        if entry_price > _effective_max:
                             logger.info(
                                 "clob_entry_price_too_high",
                                 price=str(entry_price),
-                                max_allowed=str(max_clob_entry_price),
+                                max_allowed=str(_effective_max),
+                                order_type=order_type_selected.value,
                             )
                             continue
 
@@ -1606,15 +1847,14 @@ class BotOrchestrator:
                         )
 
                         # Confidence-based limit price: discount entry to improve R:R.
-                        # Higher confidence -> smaller discount (willing to pay near market).
-                        # Lower confidence -> bigger discount (only enter at a good price).
-                        # The GTC limit order rests at the discounted price; if the market
-                        # doesn't reach it, we skip that window (no loss).
+                        # Only applies to GTC maker orders — FOK crosses the spread
+                        # immediately so discounting makes no sense.
                         original_entry_price = entry_price
                         if (
                             use_confidence_discount
                             and self._mode == "live"
                             and signal_conf > 0
+                            and order_type_selected == OrderType.GTC
                         ):
                             discount_pct = self._compute_confidence_discount(
                                 signal_conf,
@@ -1707,18 +1947,25 @@ class BotOrchestrator:
                             )
                             live_mode = bridge.mode == "live"
 
-                            # Live: GTC resting limit order — sits in the book
-                            # until filled or market settles. No cancel needed;
-                            # Polymarket auto-cancels when the market closes.
+                            # Live: dynamic order type (GTC maker or FOK taker).
+                            # GTC rests in the book; FOK fills immediately or rejects.
                             # Paper: instant-fill LIMIT (PaperTrader always fills).
                             entry_order = await bridge.submit_order(
                                 market_id=sig.market_id,
                                 token_id=token_id,
                                 side=OrderSide.BUY,
-                                order_type=OrderType.GTC if live_mode else OrderType.LIMIT,
+                                order_type=order_type_selected,
                                 price=entry_price,
                                 size=position_size,
                                 strategy_id=sig.strategy_id,
+                            )
+                            logger.info(
+                                "order_type_selected",
+                                order_type=order_type_selected.value,
+                                price=str(entry_price),
+                                spread=str(clob_spread),
+                                minute=minute_in_window,
+                                has_last_trade=clob_last_trade is not None,
                             )
                             if entry_order.status == OrderStatus.REJECTED:
                                 logger.warning(
@@ -1767,7 +2014,7 @@ class BotOrchestrator:
                                 last_clob_entry_price = clob_last_trade or clob_midpoint or clob_best_ask
                                 last_sigmoid_entry_price = sigmoid_price
 
-                                # Publish ENTRY event for GTC orders (same as instant fill)
+                                # Publish SKIP event for GTC orders — not a real entry until filled
                                 if not window_activity_published:
                                     try:
                                         import uuid as _uuid_gtc
@@ -1776,8 +2023,8 @@ class BotOrchestrator:
                                             "timestamp": datetime.now(tz=UTC).isoformat(),
                                             "minute": minute_in_window,
                                             "market_id": sig.market_id,
-                                            "outcome": "entry",
-                                            "reason": "entry_signal",
+                                            "outcome": "skip",
+                                            "reason": "gtc_pending",
                                             "direction": sig.direction.value,
                                             "confidence": last_confidence,
                                             "votes": last_eval.get("votes", {}) if last_eval.get("outcome") == "entry" else {},
