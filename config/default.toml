@@ -119,6 +119,10 @@ heavy_book_multiplier = 3.0
 min_hourly_volume = 100
 max_spread_cents = 0.05
 
+[execution.pricing]
+use_clob_pricing = true
+max_clob_entry_price = 0.80
+
 [bot]
 tick_interval_seconds = 5
 

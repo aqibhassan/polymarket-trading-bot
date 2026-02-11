@@ -387,6 +387,8 @@ class BotOrchestrator:
         fee_cost: Any = Decimal("0"),
         pnl: Any = Decimal("0"),
         signal_details: str = "",
+        clob_entry_price: Any = None,
+        sigmoid_entry_price: Any = None,
     ) -> str:
         """Record a completed trade to ClickHouse for dashboard display.
 
@@ -398,6 +400,9 @@ class BotOrchestrator:
 
         exit_time = datetime.now(tz=UTC)
         trade_id = f"paper-{uuid.uuid4().hex[:8]}"
+        # Compute bet-to-win ratio: risking entry_price to win (1 - entry_price)
+        ep = float(entry_price) if entry_price else 0
+        bet_to_win = ep / (1 - ep) if 0 < ep < 1 else 0.0
         trade_data = {
             "trade_id": trade_id,
             "market_id": market_id,
@@ -415,6 +420,9 @@ class BotOrchestrator:
             "cum_return_pct": cum_return_pct,
             "confidence": confidence,
             "signal_details": signal_details,
+            "clob_entry_price": clob_entry_price or Decimal("0"),
+            "sigmoid_entry_price": sigmoid_entry_price or Decimal("0"),
+            "bet_to_win_ratio": bet_to_win,
         }
         try:
             await ch_store.insert_trade(trade_data)
@@ -451,6 +459,7 @@ class BotOrchestrator:
         from src.data.binance_ws import BinanceWSFeed
         from src.data.clickhouse_store import ClickHouseStore
         from src.data.polymarket_scanner import PolymarketScanner
+        from src.data.polymarket_ws import PolymarketWSFeed
         from src.execution.bridge import ExecutionBridge
         from src.execution.paper_trader import PaperTrader
         from src.models.market import Candle, MarketState, OrderBookSnapshot, Side
@@ -533,6 +542,14 @@ class BotOrchestrator:
             self._config.get("execution.pricing.max_discount_pct", 0.05)
         )
 
+        # CLOB pricing config
+        use_clob_pricing = bool(
+            self._config.get("execution.pricing.use_clob_pricing", True)
+        )
+        max_clob_entry_price = Decimal(
+            str(self._config.get("execution.pricing.max_clob_entry_price", 0.80))
+        )
+
         # --- Component setup ---
         kline_ws_url = os.environ.get(
             "BINANCE_WS_URL",
@@ -548,6 +565,11 @@ class BotOrchestrator:
             symbol="BTCUSDT",
         )
         scanner = PolymarketScanner()
+        poly_ws_url = str(self._config.get(
+            "polymarket.ws_url",
+            "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        ))
+        poly_ws_feed = PolymarketWSFeed(ws_url=poly_ws_url)
         cache = RedisCache()
         redis_conn = await cache._get_redis()
         # Clear stale bot state keys from prior run so dashboard
@@ -709,6 +731,11 @@ class BotOrchestrator:
 
         await ws_feed.connect()
         await futures_feed.connect()
+        try:
+            await poly_ws_feed.connect()
+        except Exception:
+            logger.warning("polymarket_ws_connect_failed", exc_info=True)
+            # Bot continues — CLOB data will fallback to REST orderbook
         ws_connected = True
         self._touch_sentinel(_WS_CONNECTED_FILE)
 
@@ -757,6 +784,10 @@ class BotOrchestrator:
         last_market_id: str | None = None
         last_reset_date = datetime.now(tz=UTC).date()
         last_signal_details_str: str = ""
+        last_clob_entry_price: Decimal | None = None  # CLOB price at signal time
+        last_sigmoid_entry_price: Decimal | None = None  # Sigmoid price at signal time
+        current_subscribed_token: str | None = None  # Token currently subscribed on poly WS
+        last_clob_snapshot_minute: int = -1  # Track per-minute CLOB snapshots
         window_activity_published = False  # one event per 15-min window
         window_last_skip_eval: dict[str, Any] = {}  # accumulate last skip reason
 
@@ -1027,6 +1058,8 @@ class BotOrchestrator:
                                 fee_cost=last_fee_cost,
                                 pnl=pnl_wb,
                                 signal_details=last_signal_details_str,
+                                clob_entry_price=last_clob_entry_price,
+                                sigmoid_entry_price=last_sigmoid_entry_price,
                             )
                         # Publish last trade to Redis for dashboard
                         try:
@@ -1054,6 +1087,8 @@ class BotOrchestrator:
                         last_entry_side = None
                         last_entry_time = None
                         last_position_size = None
+                        last_clob_entry_price = None
+                        last_sigmoid_entry_price = None
                         # Clear persisted position from Redis
                         try:
                             await self._clear_position(redis_conn)
@@ -1116,6 +1151,14 @@ class BotOrchestrator:
                     current_window_start = None
                     window_activity_published = False
                     window_last_skip_eval = {}
+                    last_clob_snapshot_minute = -1
+                    # Unsubscribe from old token at window boundary
+                    if current_subscribed_token:
+                        try:
+                            await poly_ws_feed.unsubscribe(current_subscribed_token)
+                        except Exception:
+                            logger.debug("poly_ws_boundary_unsubscribe_failed", exc_info=True)
+                        current_subscribed_token = None
 
                 # --- First candle in a new window ---
                 if current_window_start is None:
@@ -1286,6 +1329,19 @@ class BotOrchestrator:
                 yes_token_id = active_market.yes_token_id
                 no_token_id = active_market.no_token_id
 
+                # Subscribe to Polymarket WS for real-time CLOB prices
+                if yes_token_id and yes_token_id != current_subscribed_token:
+                    if current_subscribed_token:
+                        try:
+                            await poly_ws_feed.unsubscribe(current_subscribed_token)
+                        except Exception:
+                            logger.debug("poly_ws_unsubscribe_failed", exc_info=True)
+                    try:
+                        await poly_ws_feed.subscribe(yes_token_id)
+                        current_subscribed_token = yes_token_id
+                    except Exception:
+                        logger.debug("poly_ws_subscribe_failed", exc_info=True)
+
                 market_state = MarketState(
                     market_id=market_id,
                     yes_token_id=yes_token_id,
@@ -1310,6 +1366,66 @@ class BotOrchestrator:
                         timestamp=datetime.now(tz=UTC),
                         market_id=market_id,
                     )
+
+                # --- Read CLOB state from Polymarket WS ---
+                clob_best_ask: Decimal | None = None
+                clob_best_bid: Decimal | None = None
+                clob_midpoint: Decimal | None = None
+                clob_last_trade: Decimal | None = None
+                if use_clob_pricing and yes_token_id:
+                    clob_state = poly_ws_feed.get_clob_state(yes_token_id)
+                    # Only use CLOB data if fresh (< 60s old)
+                    clob_fresh = (
+                        clob_state is not None
+                        and clob_state.best_ask is not None
+                        and clob_state.last_updated is not None
+                        and (datetime.now(tz=UTC) - clob_state.last_updated).total_seconds() < 60
+                    )
+                    if clob_fresh:
+                        assert clob_state is not None  # for type narrowing
+                        clob_best_ask = clob_state.best_ask
+                        clob_best_bid = clob_state.best_bid
+                        clob_midpoint = clob_state.midpoint
+                        clob_last_trade = clob_state.last_trade_price
+                    elif orderbook.asks:
+                        # Fallback: use REST orderbook best ask
+                        clob_best_ask = orderbook.asks[0].price
+                        clob_best_bid = orderbook.bids[0].price if orderbook.bids else None
+
+                # Log CLOB vs sigmoid comparison every tick
+                if clob_best_ask is not None:
+                    logger.info(
+                        "clob_vs_sigmoid",
+                        minute=minute_in_window,
+                        sigmoid_price=str(yes_price),
+                        clob_best_ask=str(clob_best_ask),
+                        clob_best_bid=str(clob_best_bid),
+                        clob_midpoint=str(clob_midpoint),
+                        delta=str(clob_best_ask - yes_price),
+                    )
+
+                # Store CLOB snapshot to ClickHouse (once per minute)
+                if (
+                    ch_store is not None
+                    and clob_best_ask is not None
+                    and minute_in_window != last_clob_snapshot_minute
+                ):
+                    last_clob_snapshot_minute = minute_in_window
+                    try:
+                        spread = (clob_best_ask - clob_best_bid) if clob_best_bid else Decimal("0")
+                        await ch_store.insert_clob_snapshot({
+                            "timestamp": datetime.now(tz=UTC),
+                            "market_id": market_id,
+                            "token_id": yes_token_id,
+                            "best_bid": clob_best_bid or Decimal("0"),
+                            "best_ask": clob_best_ask,
+                            "midpoint": clob_midpoint or Decimal("0"),
+                            "spread": spread,
+                            "last_trade_price": clob_last_trade or Decimal("0"),
+                            "sigmoid_price": yes_price,
+                        })
+                    except Exception:
+                        logger.debug("clob_snapshot_insert_failed", exc_info=True)
 
                 # --- Generate signals ---
                 signals = self._strategy.generate_signals(
@@ -1361,7 +1477,26 @@ class BotOrchestrator:
 
                 for sig in signals:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position:
-                        entry_price = sig.entry_price or yes_price
+                        sigmoid_price = sig.entry_price or yes_price
+
+                        # Use CLOB best_ask for live entry pricing
+                        if (
+                            use_clob_pricing
+                            and self._mode == "live"
+                            and clob_best_ask is not None
+                        ):
+                            entry_price = clob_best_ask
+                        else:
+                            entry_price = sigmoid_price
+
+                        # Safety gate: reject entries where CLOB price is too high (poor R:R)
+                        if entry_price > max_clob_entry_price:
+                            logger.info(
+                                "clob_entry_price_too_high",
+                                price=str(entry_price),
+                                max_allowed=str(max_clob_entry_price),
+                            )
+                            continue
 
                         # --- Position sizing: fixed bet or Kelly ---
                         # Sizer returns USD amount; convert to shares (USD / entry_price)
@@ -1556,6 +1691,8 @@ class BotOrchestrator:
                                     if active_market else market_id
                                 )
                                 last_signal_details_str = last_signal_details
+                                last_clob_entry_price = clob_best_ask
+                                last_sigmoid_entry_price = sigmoid_price
 
                                 # Publish ENTRY event for GTC orders (same as instant fill)
                                 if not window_activity_published:
@@ -1626,6 +1763,8 @@ class BotOrchestrator:
                                 if active_market else market_id
                             )
                             last_signal_details_str = last_signal_details
+                            last_clob_entry_price = clob_best_ask
+                            last_sigmoid_entry_price = sigmoid_price
 
                             # Persist position to Redis (survives restart)
                             try:
@@ -1894,6 +2033,8 @@ class BotOrchestrator:
                                 fee_cost=last_fee_cost,
                                 pnl=pnl_ex,
                                 signal_details=last_signal_details_str,
+                                clob_entry_price=last_clob_entry_price,
+                                sigmoid_entry_price=last_sigmoid_entry_price,
                             )
                         # Publish last trade to Redis for dashboard
                         try:
@@ -1921,6 +2062,8 @@ class BotOrchestrator:
                         last_entry_side = None
                         last_entry_time = None
                         last_position_size = None
+                        last_clob_entry_price = None
+                        last_sigmoid_entry_price = None
                         # Clear persisted position from Redis
                         try:
                             await self._clear_position(redis_conn)
@@ -1966,6 +2109,7 @@ class BotOrchestrator:
             ws_connected = False
             await ws_feed.disconnect()
             await futures_feed.disconnect()
+            await poly_ws_feed.disconnect()
             self._remove_sentinel(_WS_CONNECTED_FILE)
             await cache.close()
             if ch_store is not None:

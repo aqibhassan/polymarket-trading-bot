@@ -14,6 +14,9 @@ export interface Trade {
   window_minute: number;
   cum_return_pct: number;
   confidence: number;
+  clob_entry_price: number;
+  sigmoid_entry_price: number;
+  bet_to_win_ratio: number;
 }
 
 export interface DailyPnl {

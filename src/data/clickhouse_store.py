@@ -76,6 +76,23 @@ ORDER BY (strategy, timestamp)
 PARTITION BY toYYYYMM(timestamp)
 """
 
+CREATE_CLOB_PRICE_SNAPSHOTS = """
+CREATE TABLE IF NOT EXISTS mvhe.clob_price_snapshots (
+    timestamp DateTime64(3),
+    market_id String,
+    token_id String,
+    best_bid Decimal64(6),
+    best_ask Decimal64(6),
+    midpoint Decimal64(6),
+    spread Decimal64(6),
+    last_trade_price Decimal64(6),
+    sigmoid_price Decimal64(6)
+) ENGINE = MergeTree()
+ORDER BY (token_id, timestamp)
+PARTITION BY toYYYYMM(timestamp)
+TTL toDateTime(timestamp) + INTERVAL 30 DAY
+"""
+
 CREATE_DAILY_SUMMARY_TABLE = """
 CREATE TABLE IF NOT EXISTS mvhe.daily_summary (
     date Date,
@@ -160,6 +177,7 @@ class ClickHouseStore:
         await asyncio.to_thread(self._client.command, CREATE_AUDIT_EVENTS_TABLE)
         await asyncio.to_thread(self._client.command, CREATE_DAILY_SUMMARY_TABLE)
         await asyncio.to_thread(self._client.command, CREATE_SIGNAL_EVALUATIONS)
+        await asyncio.to_thread(self._client.command, CREATE_CLOB_PRICE_SNAPSHOTS)
         # Migration: add signal_details column if missing (idempotent)
         try:
             await asyncio.to_thread(
@@ -168,6 +186,16 @@ class ClickHouseStore:
             )
         except Exception:
             log.debug("signal_details_column_migration_skipped", exc_info=True)
+        # Migration: add CLOB pricing columns to trades table
+        for col_ddl in (
+            "ALTER TABLE mvhe.trades ADD COLUMN IF NOT EXISTS clob_entry_price Decimal64(6) DEFAULT 0",
+            "ALTER TABLE mvhe.trades ADD COLUMN IF NOT EXISTS sigmoid_entry_price Decimal64(6) DEFAULT 0",
+            "ALTER TABLE mvhe.trades ADD COLUMN IF NOT EXISTS bet_to_win_ratio Float64 DEFAULT 0",
+        ):
+            try:
+                await asyncio.to_thread(self._client.command, col_ddl)
+            except Exception:
+                log.debug("clob_column_migration_skipped", ddl=col_ddl[:60], exc_info=True)
         log.info("clickhouse.connected", host=self._host, port=self._port)
 
     async def disconnect(self) -> None:
@@ -201,6 +229,9 @@ class ClickHouseStore:
             float(trade_data.get("cum_return_pct", 0.0)),
             float(trade_data.get("confidence", 0.0)),
             trade_data.get("signal_details", ""),
+            Decimal(str(trade_data.get("clob_entry_price", 0))),
+            Decimal(str(trade_data.get("sigmoid_entry_price", 0))),
+            float(trade_data.get("bet_to_win_ratio", 0.0)),
         ]
         column_names = [
             "trade_id", "market_id", "strategy", "direction",
@@ -208,6 +239,7 @@ class ClickHouseStore:
             "entry_time", "exit_time", "exit_reason",
             "window_minute", "cum_return_pct", "confidence",
             "signal_details",
+            "clob_entry_price", "sigmoid_entry_price", "bet_to_win_ratio",
         ]
         await asyncio.to_thread(
             self._client.insert,
@@ -283,6 +315,38 @@ class ClickHouseStore:
             column_names=column_names,
         )
         log.debug("clickhouse.signal_evaluation_inserted", eval_id=row[0])
+
+    async def insert_clob_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Insert a CLOB price snapshot for historical analysis.
+
+        Args:
+            snapshot: Dict with timestamp, market_id, token_id, best_bid,
+                      best_ask, midpoint, spread, last_trade_price, sigmoid_price.
+        """
+        assert self._client is not None, "Call connect() first"
+        row = [
+            snapshot.get("timestamp", datetime.now(tz=UTC)),
+            snapshot.get("market_id", ""),
+            snapshot.get("token_id", ""),
+            Decimal(str(snapshot.get("best_bid", 0))),
+            Decimal(str(snapshot.get("best_ask", 0))),
+            Decimal(str(snapshot.get("midpoint", 0))),
+            Decimal(str(snapshot.get("spread", 0))),
+            Decimal(str(snapshot.get("last_trade_price", 0))),
+            Decimal(str(snapshot.get("sigmoid_price", 0))),
+        ]
+        column_names = [
+            "timestamp", "market_id", "token_id",
+            "best_bid", "best_ask", "midpoint", "spread",
+            "last_trade_price", "sigmoid_price",
+        ]
+        await asyncio.to_thread(
+            self._client.insert,
+            "mvhe.clob_price_snapshots",
+            [row],
+            column_names=column_names,
+        )
+        log.debug("clickhouse.clob_snapshot_inserted", token_id=snapshot.get("token_id", "")[:16])
 
     async def get_trades(
         self,

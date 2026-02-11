@@ -30,3 +30,5 @@ circuit_breaker_cooldown_seconds = 120
 use_confidence_discount = true
 min_discount_pct = 0.005   # 0.5% for very high confidence (0.95+)
 max_discount_pct = 0.05    # 5% for threshold confidence (~0.50)
+use_clob_pricing = true
+max_clob_entry_price = 0.80

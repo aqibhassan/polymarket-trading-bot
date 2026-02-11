@@ -8,6 +8,7 @@ import type { Trade, DailyPnl, StrategyPerformance, AuditEvent, AdvancedMetrics,
 const TRADE_NUMERIC_FIELDS = new Set([
   'entry_price', 'exit_price', 'position_size', 'pnl', 'fee_cost',
   'window_minute', 'cum_return_pct', 'confidence',
+  'clob_entry_price', 'sigmoid_entry_price', 'bet_to_win_ratio',
 ]);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -10,6 +10,7 @@ import pytest
 
 from src.data.clickhouse_store import (
     CREATE_AUDIT_EVENTS_TABLE,
+    CREATE_CLOB_PRICE_SNAPSHOTS,
     CREATE_DAILY_SUMMARY_TABLE,
     CREATE_DB,
     CREATE_TRADES_TABLE,
@@ -133,14 +134,18 @@ class TestClickHouseStoreConnect:
             await store.connect()
 
         assert store._client is mock_client
-        # Should create database + 3 tables + 1 migration (signal_details column)
-        assert mock_client.command.call_count == 5
+        # DB + 5 tables + 1 migration (signal_details) + 3 migrations (CLOB columns) = 10
+        assert mock_client.command.call_count == 10
         calls = [c.args[0] for c in mock_client.command.call_args_list]
         assert calls[0] == CREATE_DB
         assert calls[1] == CREATE_TRADES_TABLE
         assert calls[2] == CREATE_AUDIT_EVENTS_TABLE
         assert calls[3] == CREATE_DAILY_SUMMARY_TABLE
-        assert "signal_details" in calls[4]
+        # signal_evaluations + clob_price_snapshots
+        assert "signal_details" in calls[6]
+        assert "clob_entry_price" in calls[7]
+        assert "sigmoid_entry_price" in calls[8]
+        assert "bet_to_win_ratio" in calls[9]
 
     @pytest.mark.asyncio()
     async def test_disconnect(self, connected_store: ClickHouseStore, mock_client: MagicMock) -> None:
@@ -411,3 +416,102 @@ class TestClickHouseStoreUnavailable:
                 start=datetime(2024, 1, 1, tzinfo=UTC),
                 end=datetime(2024, 1, 2, tzinfo=UTC),
             )
+
+
+# ---------------------------------------------------------------------------
+# CLOB pricing columns in trades
+# ---------------------------------------------------------------------------
+
+
+class TestClickHouseStoreCLOBColumns:
+    @pytest.mark.asyncio()
+    async def test_insert_trade_with_clob_columns(
+        self,
+        connected_store: ClickHouseStore,
+        mock_client: MagicMock,
+        sample_trade: dict,
+    ) -> None:
+        sample_trade["clob_entry_price"] = Decimal("0.65")
+        sample_trade["sigmoid_entry_price"] = Decimal("0.505")
+        sample_trade["bet_to_win_ratio"] = 1.857
+
+        with patch("src.data.clickhouse_store.asyncio.to_thread", side_effect=_fake_to_thread):
+            await connected_store.insert_trade(sample_trade)
+
+        call_args = mock_client.insert.call_args
+        row = call_args.args[1][0]
+        column_names = call_args.kwargs["column_names"]
+        assert "clob_entry_price" in column_names
+        assert "sigmoid_entry_price" in column_names
+        assert "bet_to_win_ratio" in column_names
+        # clob_entry_price is at index 16 (after signal_details)
+        clob_idx = column_names.index("clob_entry_price")
+        assert row[clob_idx] == Decimal("0.65")
+        sig_idx = column_names.index("sigmoid_entry_price")
+        assert row[sig_idx] == Decimal("0.505")
+        btr_idx = column_names.index("bet_to_win_ratio")
+        assert abs(row[btr_idx] - 1.857) < 0.001
+
+    @pytest.mark.asyncio()
+    async def test_insert_trade_clob_defaults_to_zero(
+        self,
+        connected_store: ClickHouseStore,
+        mock_client: MagicMock,
+    ) -> None:
+        """When CLOB columns are absent, they default to 0."""
+        trade = {"market_id": "m1", "strategy": "s1"}
+        with patch("src.data.clickhouse_store.asyncio.to_thread", side_effect=_fake_to_thread):
+            await connected_store.insert_trade(trade)
+
+        call_args = mock_client.insert.call_args
+        row = call_args.args[1][0]
+        column_names = call_args.kwargs["column_names"]
+        clob_idx = column_names.index("clob_entry_price")
+        assert row[clob_idx] == Decimal("0")
+        btr_idx = column_names.index("bet_to_win_ratio")
+        assert row[btr_idx] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Insert CLOB snapshot
+# ---------------------------------------------------------------------------
+
+
+class TestClickHouseStoreInsertCLOBSnapshot:
+    @pytest.mark.asyncio()
+    async def test_insert_clob_snapshot(
+        self,
+        connected_store: ClickHouseStore,
+        mock_client: MagicMock,
+    ) -> None:
+        snapshot = {
+            "timestamp": datetime(2026, 2, 11, 12, 0, 0, tzinfo=UTC),
+            "market_id": "market-btc-15m",
+            "token_id": "token-yes-abc",
+            "best_bid": Decimal("0.62"),
+            "best_ask": Decimal("0.64"),
+            "midpoint": Decimal("0.63"),
+            "spread": Decimal("0.02"),
+            "last_trade_price": Decimal("0.625"),
+            "sigmoid_price": Decimal("0.505"),
+        }
+        with patch("src.data.clickhouse_store.asyncio.to_thread", side_effect=_fake_to_thread):
+            await connected_store.insert_clob_snapshot(snapshot)
+
+        mock_client.insert.assert_called_once()
+        call_args = mock_client.insert.call_args
+        assert call_args.args[0] == "mvhe.clob_price_snapshots"
+        row = call_args.args[1][0]
+        column_names = call_args.kwargs["column_names"]
+        assert column_names[0] == "timestamp"
+        assert column_names[1] == "market_id"
+        assert column_names[2] == "token_id"
+        assert row[column_names.index("best_bid")] == Decimal("0.62")
+        assert row[column_names.index("best_ask")] == Decimal("0.64")
+        assert row[column_names.index("sigmoid_price")] == Decimal("0.505")
+
+    @pytest.mark.asyncio()
+    async def test_insert_clob_snapshot_before_connect_raises(self) -> None:
+        s = ClickHouseStore()
+        with pytest.raises(AssertionError, match="connect"):
+            await s.insert_clob_snapshot({"token_id": "t1"})
