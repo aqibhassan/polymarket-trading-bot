@@ -215,28 +215,40 @@ class PolymarketLiveTrader:
             #   - maker amount (price * size): max 2 decimals
             # Size rounded to integer: price(2dp) * size(0dp) <= 2dp always.
             #
-            # BUY: fetch best ask from order book and bid at that price to
-            # cross the spread and fill immediately. Fall back to model
-            # price + buffer if book fetch fails.
+            # GTC BUY: use the model price directly — the bot already applies
+            # confidence-based discounting so the price is intentionally below
+            # market to rest as a maker order.
+            # Non-GTC BUY: fetch best ask to cross the spread (taker fill).
             # SELL: floor price so ask <= market.
+            is_gtc = order_type == OrderType.GTC
             if side == OrderSide.BUY:
-                best_ask = self._fetch_best_ask(token_id)
-                if best_ask is not None and best_ask > 0:
-                    # Bid at best ask to cross spread (taker fill)
-                    rounded_price = best_ask
+                if is_gtc:
+                    # GTC: use the model price (already discounted by bot).
+                    # Round to 2dp tick and rest as a maker order.
+                    rounded_price = math.floor(float(price) * 100) / 100
                     logger.info(
-                        "buy_price_from_book",
-                        best_ask=best_ask,
+                        "buy_price_gtc_limit",
+                        limit_price=rounded_price,
                         model_price=float(price),
                     )
                 else:
-                    # Fallback: model price + buffer
-                    rounded_price = math.ceil(float(price) * 100) / 100 + 0.10
-                    logger.info(
-                        "buy_price_fallback",
-                        rounded_price=rounded_price,
-                        model_price=float(price),
-                    )
+                    best_ask = self._fetch_best_ask(token_id)
+                    if best_ask is not None and best_ask > 0:
+                        # Bid at best ask to cross spread (taker fill)
+                        rounded_price = best_ask
+                        logger.info(
+                            "buy_price_from_book",
+                            best_ask=best_ask,
+                            model_price=float(price),
+                        )
+                    else:
+                        # Fallback: model price + buffer
+                        rounded_price = math.ceil(float(price) * 100) / 100 + 0.10
+                        logger.info(
+                            "buy_price_fallback",
+                            rounded_price=rounded_price,
+                            model_price=float(price),
+                        )
                 rounded_price = min(rounded_price, 0.95)  # Safety cap
                 rounded_price = max(rounded_price, 0.01)  # Floor
             else:

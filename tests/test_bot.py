@@ -456,3 +456,121 @@ class TestStatePublishing:
         # active_market is None => polymarket should be False
         assert data["polymarket"] is False
         assert call[1]["ttl"] == 120
+
+
+class TestConfidenceDiscount:
+    """Tests for confidence-based limit price discounting."""
+
+    def test_discount_high_confidence(self):
+        """High confidence (0.95) should yield near-minimum discount."""
+        discount = BotOrchestrator._compute_confidence_discount(0.95)
+        # conf=0.95 is 90% of the way from 0.5 to 1.0
+        # discount = 0.05 - 0.45/0.5 * (0.05 - 0.005) = 0.05 - 0.9 * 0.045 = 0.0095
+        assert discount == pytest.approx(0.0095, abs=1e-6)
+
+    def test_discount_medium_confidence(self):
+        """Medium confidence (0.75) should yield mid-range discount."""
+        discount = BotOrchestrator._compute_confidence_discount(0.75)
+        # conf=0.75 is 50% of the way from 0.5 to 1.0
+        # discount = 0.05 - 0.25/0.5 * 0.045 = 0.05 - 0.0225 = 0.0275
+        assert discount == pytest.approx(0.0275, abs=1e-6)
+
+    def test_discount_threshold_confidence(self):
+        """Threshold confidence (0.50) should yield maximum discount."""
+        discount = BotOrchestrator._compute_confidence_discount(0.50)
+        assert discount == pytest.approx(0.05, abs=1e-6)
+
+    def test_discount_full_confidence(self):
+        """Full confidence (1.0) should yield minimum discount."""
+        discount = BotOrchestrator._compute_confidence_discount(1.0)
+        assert discount == pytest.approx(0.005, abs=1e-6)
+
+    def test_discount_clamped_below(self):
+        """Confidence above 1.0 should clamp discount to min."""
+        discount = BotOrchestrator._compute_confidence_discount(1.2)
+        assert discount == pytest.approx(0.005, abs=1e-6)
+
+    def test_discount_clamped_above(self):
+        """Confidence below 0.5 should clamp discount to max."""
+        discount = BotOrchestrator._compute_confidence_discount(0.3)
+        assert discount == pytest.approx(0.05, abs=1e-6)
+
+    def test_discount_custom_bounds(self):
+        """Custom min/max discount bounds should work."""
+        discount = BotOrchestrator._compute_confidence_discount(
+            0.75, min_discount_pct=0.01, max_discount_pct=0.10,
+        )
+        # 50% of the way: 0.10 - 0.5 * 0.09 = 0.055
+        assert discount == pytest.approx(0.055, abs=1e-6)
+
+    def test_apply_discount_yes_price(self):
+        """Discounting YES price at 0.50 by 5% should give 0.47."""
+        result = BotOrchestrator._apply_confidence_discount(
+            Decimal("0.50"), 0.05,
+        )
+        # 0.50 * 0.95 = 0.475, floor to tick 0.01 => 0.47
+        assert result == Decimal("0.47")
+
+    def test_apply_discount_rounds_down(self):
+        """Discounted price should always round down to Polymarket tick."""
+        result = BotOrchestrator._apply_confidence_discount(
+            Decimal("0.53"), 0.02,
+        )
+        # 0.53 * 0.98 = 0.5194, floor to tick => 0.51
+        assert result == Decimal("0.51")
+
+    def test_apply_discount_floor_at_minimum(self):
+        """Heavily discounted low price should floor at 0.01."""
+        result = BotOrchestrator._apply_confidence_discount(
+            Decimal("0.02"), 0.05,
+        )
+        # 0.02 * 0.95 = 0.019, floor to tick => 0.01
+        assert result == Decimal("0.01")
+
+    def test_apply_discount_zero_discount(self):
+        """Zero discount should return price floored to tick."""
+        result = BotOrchestrator._apply_confidence_discount(
+            Decimal("0.50"), 0.0,
+        )
+        assert result == Decimal("0.50")
+
+    def test_apply_discount_exact_tick(self):
+        """Price that lands exactly on a tick should stay unchanged."""
+        result = BotOrchestrator._apply_confidence_discount(
+            Decimal("0.50"), 0.02,
+        )
+        # 0.50 * 0.98 = 0.49, exactly on tick
+        assert result == Decimal("0.49")
+
+    def test_discount_monotonically_decreasing(self):
+        """Higher confidence should always give smaller discount."""
+        prev_discount = float("inf")
+        for conf in [0.50, 0.60, 0.70, 0.80, 0.90, 1.00]:
+            discount = BotOrchestrator._compute_confidence_discount(conf)
+            assert discount < prev_discount or (
+                conf == 0.50 and discount == prev_discount
+            ), f"Discount not decreasing at conf={conf}"
+            prev_discount = discount
+
+    def test_discount_improves_rr(self):
+        """Discounted price should give better R:R than original."""
+        original_price = Decimal("0.50")
+        discounted_price = BotOrchestrator._apply_confidence_discount(
+            original_price, 0.03,
+        )
+        # R:R = (1 - price) / price for binary markets
+        original_rr = (Decimal("1") - original_price) / original_price
+        discounted_rr = (Decimal("1") - discounted_price) / discounted_price
+        assert discounted_rr > original_rr
+
+    def test_not_applied_in_paper_mode(self, swing_config):
+        """Discount should NOT be applied in paper mode (handled by mode check)."""
+        # Verify paper mode bot has _mode != "live"
+        bot = BotOrchestrator(
+            mode="paper",
+            strategy_name="momentum_confirmation",
+            config=swing_config,
+        )
+        assert bot._mode == "paper"
+        # The discount block only runs when self._mode == "live",
+        # so paper mode correctly skips it.

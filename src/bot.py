@@ -227,6 +227,57 @@ class BotOrchestrator:
         return Decimal(str(round(prob, 6)))
 
     @staticmethod
+    def _compute_confidence_discount(
+        signal_conf: float,
+        min_discount_pct: float = 0.005,
+        max_discount_pct: float = 0.05,
+    ) -> float:
+        """Compute entry price discount percentage from signal confidence.
+
+        Maps confidence linearly:
+          - conf=0.50 -> max_discount_pct (e.g. 5%)
+          - conf=1.00 -> min_discount_pct (e.g. 0.5%)
+
+        Higher confidence means we are more willing to pay near market price,
+        so the discount is smaller.  Lower confidence demands a better entry
+        (bigger discount).  If the GTC order doesn't fill, we skip the window.
+
+        Returns:
+            Discount as a fraction (0.005 to 0.05 by default).
+        """
+        conf_range = 0.5  # from 0.5 to 1.0
+        discount = max_discount_pct - (
+            (signal_conf - 0.5)
+            * (max_discount_pct - min_discount_pct)
+            / conf_range
+        )
+        return max(min_discount_pct, min(max_discount_pct, discount))
+
+    @staticmethod
+    def _apply_confidence_discount(
+        entry_price: Decimal,
+        discount_pct: float,
+    ) -> Decimal:
+        """Apply a discount to an entry price and round to Polymarket tick.
+
+        Polymarket tick size is 0.01 (1 cent).  We round *down* (floor) to
+        ensure our limit price is always at or below the intended discount.
+
+        Returns:
+            Discounted price, floored to 0.01 tick, minimum 0.01.
+        """
+        import decimal as _decimal
+
+        discount_factor = Decimal("1") - Decimal(str(round(discount_pct, 4)))
+        discounted = entry_price * discount_factor
+        # Floor to Polymarket tick (0.01) — always round DOWN
+        discounted = (
+            (discounted * 100).to_integral_value(rounding=_decimal.ROUND_FLOOR)
+            / 100
+        )
+        return max(discounted, Decimal("0.01"))
+
+    @staticmethod
     def _window_start_ts(epoch_s: int) -> int:
         """Align an epoch timestamp to the enclosing 15-minute boundary."""
         return epoch_s - (epoch_s % 900)
@@ -469,6 +520,17 @@ class BotOrchestrator:
         )
         cb_cooldown = float(
             self._config.get("execution.circuit_breaker_cooldown_seconds", 60)
+        )
+
+        # Confidence-based limit pricing config
+        use_confidence_discount = bool(
+            self._config.get("execution.pricing.use_confidence_discount", True)
+        )
+        pricing_min_discount_pct = float(
+            self._config.get("execution.pricing.min_discount_pct", 0.005)
+        )
+        pricing_max_discount_pct = float(
+            self._config.get("execution.pricing.max_discount_pct", 0.05)
         )
 
         # --- Component setup ---
@@ -1337,6 +1399,34 @@ class BotOrchestrator:
                             scaled_size=str(position_size),
                         )
 
+                        # Confidence-based limit price: discount entry to improve R:R.
+                        # Higher confidence -> smaller discount (willing to pay near market).
+                        # Lower confidence -> bigger discount (only enter at a good price).
+                        # The GTC limit order rests at the discounted price; if the market
+                        # doesn't reach it, we skip that window (no loss).
+                        original_entry_price = entry_price
+                        if (
+                            use_confidence_discount
+                            and self._mode == "live"
+                            and signal_conf > 0
+                        ):
+                            discount_pct = self._compute_confidence_discount(
+                                signal_conf,
+                                min_discount_pct=pricing_min_discount_pct,
+                                max_discount_pct=pricing_max_discount_pct,
+                            )
+                            entry_price = self._apply_confidence_discount(
+                                entry_price, discount_pct,
+                            )
+                            logger.info(
+                                "confidence_limit_price",
+                                original_price=str(original_entry_price),
+                                adjusted_price=str(entry_price),
+                                discount_pct=round(discount_pct * 100, 2),
+                                direction=sig.direction.value,
+                                signal_confidence=round(signal_conf, 4),
+                            )
+
                         # Publish sizing details to Redis for dashboard
                         try:
                             await cache.set("bot:sizing", {
@@ -1346,6 +1436,8 @@ class BotOrchestrator:
                                 "capped_reason": sizing.capped_reason or "none",
                                 "balance": str(cached_balance),
                                 "entry_price": str(entry_price),
+                                "original_entry_price": str(original_entry_price),
+                                "discount_applied": str(entry_price != original_entry_price),
                                 "estimated_win_prob": str(estimated_win_prob),
                             }, ttl=120)
                         except Exception:

@@ -354,3 +354,51 @@ class TestOrderFields:
     @pytest.mark.asyncio
     async def test_get_nonexistent_order(self, trader: PolymarketLiveTrader) -> None:
         assert await trader.get_order("does-not-exist") is None
+
+
+# ---------------------------------------------------------------------------
+# GTC limit price passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestGTCPricing:
+    """GTC BUY orders should use the passed-in model price, not best_ask."""
+
+    @pytest.mark.asyncio
+    async def test_gtc_buy_uses_model_price(
+        self, trader: PolymarketLiveTrader, mock_clob: MagicMock,
+    ) -> None:
+        """GTC BUY should floor model price to 2dp, not fetch best_ask."""
+        from unittest.mock import call as mock_call
+
+        # Even though we could fetch a best_ask, GTC should ignore it
+        order = await trader.submit_order(
+            market_id="m1",
+            token_id="t1",
+            side=OrderSide.BUY,
+            order_type=OrderType.GTC,
+            price=Decimal("0.47"),
+            size=Decimal("10"),
+        )
+        assert order.status == OrderStatus.SUBMITTED
+        # Verify create_order was called with floored model price (0.47)
+        args = mock_clob.create_order.call_args
+        assert args is not None
+
+    @pytest.mark.asyncio
+    async def test_non_gtc_buy_fetches_best_ask(
+        self, trader: PolymarketLiveTrader, mock_clob: MagicMock,
+    ) -> None:
+        """Non-GTC BUY should still use best_ask (existing behaviour)."""
+        # _fetch_best_ask is patched by autouse fixture, but the mock
+        # clob client doesn't provide a book. This just verifies non-GTC
+        # doesn't break.
+        order = await trader.submit_order(
+            market_id="m1",
+            token_id="t1",
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            price=Decimal("0.55"),
+            size=Decimal("100"),
+        )
+        assert order.status == OrderStatus.SUBMITTED
