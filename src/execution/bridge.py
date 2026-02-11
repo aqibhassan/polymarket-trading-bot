@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Polymarket CLOB minimum order size (tokens)
+POLYMARKET_MIN_ORDER_SIZE = 5
+
 
 def _confirm_live_trading() -> bool:
     """Prompt the user to confirm live trading. Returns True if confirmed."""
@@ -100,6 +103,29 @@ class ExecutionBridge:
         size: Decimal,
         strategy_id: str = "",
     ) -> Order:
+        # Minimum order size gate (Polymarket CLOB requires >= 5 tokens)
+        if self._mode == "live" and size < POLYMARKET_MIN_ORDER_SIZE:
+            from src.models.order import Order as OrderModel
+            from src.models.order import OrderStatus
+
+            logger.warning(
+                "bridge_order_below_minimum",
+                market_id=market_id,
+                size=str(size),
+                minimum=POLYMARKET_MIN_ORDER_SIZE,
+            )
+            rejected = OrderModel(
+                market_id=market_id,
+                token_id=token_id,
+                side=side,
+                order_type=order_type,
+                price=price,
+                size=size,
+                strategy_id=strategy_id,
+                status=OrderStatus.REJECTED,
+            )
+            return rejected
+
         # Circuit breaker gate
         if self._circuit_breaker is not None and not self._circuit_breaker.can_execute():
             from src.models.order import Order as OrderModel

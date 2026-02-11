@@ -2,11 +2,11 @@
 # Loaded on top of default.toml when --env production is specified.
 
 [risk]
-max_position_pct = 0.01              # Start 1% (paper uses 5%)
-min_position_pct = 0.005
-max_daily_drawdown_pct = 0.03        # 3% kill switch (paper uses 5%)
+max_position_pct = 0.05              # 5% — $5/trade at $100 balance (Polymarket min: 5 tokens)
+min_position_pct = 0.03              # 3% floor ensures >5 tokens at $100 balance
+max_daily_drawdown_pct = 0.05        # 5% kill switch
 min_starting_balance = 10             # Minimum 10 USDC to start live trading
-kelly_multiplier = 0.15              # Eighth-Kelly (paper uses quarter)
+kelly_multiplier = 0.25              # Quarter-Kelly (matches paper)
 
 [risk.live_safety]
 balance_floor_pct = 0.50             # Halt if balance < 50% of initial
