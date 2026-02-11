@@ -188,7 +188,7 @@ class PolymarketLiveTrader:
             #   - taker amount (size): max 4 decimals
             #   - maker amount (price * size): max 2 decimals
             # Size rounded to integer: price(2dp) * size(0dp) <= 2dp always.
-            # BUY: ceil + 2 ticks so FOK sweeps thin books (fills at best avail).
+            # BUY: ceil + 2 ticks above market — resting GTC order attracts fills.
             # SELL: floor price so ask <= market.
             import math
             if side == OrderSide.BUY:

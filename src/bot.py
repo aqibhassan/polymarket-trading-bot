@@ -1229,43 +1229,19 @@ class BotOrchestrator:
                                 if sig.direction == Side.YES
                                 else no_token_id
                             )
-                            # FOK in live mode ensures instant fill-or-reject;
-                            # GTC limit orders can sit unfilled in the book.
                             live_mode = bridge.mode == "live"
 
-                            # Pre-check: verify target token has ask liquidity
-                            # before wasting a FOK API call on an empty book.
-                            if live_mode and token_id:
-                                try:
-                                    target_book = await scanner.get_market_orderbook(token_id)
-                                    total_ask_size = sum(
-                                        float(a.size) for a in target_book.asks
-                                    )
-                                    if total_ask_size < float(position_size) * 0.5:
-                                        logger.warning(
-                                            "skip_fok_insufficient_book_liquidity",
-                                            market_id=sig.market_id,
-                                            direction=sig.direction.value,
-                                            ask_depth=total_ask_size,
-                                            order_size=float(position_size),
-                                        )
-                                        continue
-                                except Exception:
-                                    logger.debug(
-                                        "book_liquidity_check_failed",
-                                        exc_info=True,
-                                    )
-
+                            # Live: GTC limit order + poll for fill (up to 15s).
+                            # Paper: instant-fill LIMIT (PaperTrader always fills).
                             entry_order = await bridge.submit_order(
                                 market_id=sig.market_id,
                                 token_id=token_id,
                                 side=OrderSide.BUY,
-                                order_type=OrderType.FOK if live_mode else OrderType.LIMIT,
+                                order_type=OrderType.GTC if live_mode else OrderType.LIMIT,
                                 price=entry_price,
                                 size=position_size,
                                 strategy_id=sig.strategy_id,
                             )
-                            # Check for rejected or unfilled orders
                             if entry_order.status == OrderStatus.REJECTED:
                                 logger.warning(
                                     "entry_order_rejected",
@@ -1273,13 +1249,48 @@ class BotOrchestrator:
                                     reason="order returned REJECTED status",
                                 )
                                 continue
-                            if entry_order.status == OrderStatus.SUBMITTED:
-                                # GTC order placed but not filled — don't record position
-                                logger.warning(
-                                    "entry_order_not_filled",
-                                    market_id=sig.market_id,
-                                    reason="order SUBMITTED but not FILLED (no matching liquidity)",
-                                )
+
+                            # GTC returns SUBMITTED — poll CLOB for fill status.
+                            if live_mode and entry_order.status == OrderStatus.SUBMITTED:
+                                exchange_oid = entry_order.exchange_order_id
+                                filled = False
+                                for poll_i in range(5):  # Poll up to 5x (15s total)
+                                    await asyncio.sleep(3)
+                                    try:
+                                        resp = bridge._live_trader._clob_client.get_order(exchange_oid)
+                                        status = resp.get("status", "") if isinstance(resp, dict) else ""
+                                        if status == "MATCHED":
+                                            filled = True
+                                            logger.info(
+                                                "gtc_order_filled",
+                                                order_id=str(entry_order.id),
+                                                exchange_oid=exchange_oid,
+                                                poll_attempt=poll_i + 1,
+                                            )
+                                            break
+                                        if status in ("CANCELLED", ""):
+                                            break  # Order gone
+                                    except Exception:
+                                        logger.debug("gtc_poll_failed", exc_info=True)
+
+                                if not filled:
+                                    # Cancel unfilled GTC order
+                                    try:
+                                        if bridge._live_trader and exchange_oid:
+                                            await bridge._live_trader.cancel_order(
+                                                str(entry_order.id),
+                                            )
+                                    except Exception:
+                                        logger.debug("gtc_cancel_failed", exc_info=True)
+                                    logger.warning(
+                                        "gtc_order_not_filled_cancelled",
+                                        market_id=sig.market_id,
+                                        exchange_oid=exchange_oid,
+                                    )
+                                    continue
+
+                            elif entry_order.status == OrderStatus.SUBMITTED:
+                                # Paper mode GTC not filled (shouldn't happen)
                                 continue
                             # Use actual filled size (handles partial fills)
                             actual_fill_size = entry_order.filled_size or position_size
