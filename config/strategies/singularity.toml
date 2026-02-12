@@ -58,8 +58,8 @@ stop_loss_pct = 1.00
 profit_target_pct = 0.40
 
 # --- Position sizing ---
-max_position_pct = 0.05     # 5% max — Kelly sizes up to this with 93% WR
-min_position_pct = 0.01     # 1% floor — always participate when signal fires
+max_position_pct = 0.10     # 10% max — ensures positions clear 5-token Polymarket minimum on small balances
+min_position_pct = 0.03     # 3% floor — always participate when signal fires
 
 # --- OFI parameters (LIVE-TUNED 2026-02-12) ---
 ofi_levels = 20                 # live-tuned: read deeper book for real imbalance (was 5)

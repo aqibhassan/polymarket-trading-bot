@@ -1502,12 +1502,15 @@ class BotOrchestrator:
                 clob_last_trade: Decimal | None = None
                 if use_clob_pricing and yes_token_id:
                     clob_state = poly_ws_feed.get_clob_state(yes_token_id)
-                    # Only use CLOB data if fresh (< 60s old)
+                    # Only use CLOB data if fresh (< 300s old).
+                    # 300s covers one full 15-min window; on desert markets the WS
+                    # only sends one book snapshot on subscribe and then goes silent,
+                    # so 60s was causing REST-seeded data to expire every tick.
                     clob_fresh = (
                         clob_state is not None
                         and clob_state.best_ask is not None
                         and clob_state.last_updated is not None
-                        and (datetime.now(tz=UTC) - clob_state.last_updated).total_seconds() < 60
+                        and (datetime.now(tz=UTC) - clob_state.last_updated).total_seconds() < 300
                     )
                     if clob_fresh:
                         assert clob_state is not None  # for type narrowing
@@ -1531,7 +1534,7 @@ class BotOrchestrator:
                         no_clob_state is not None
                         and no_clob_state.best_ask is not None
                         and no_clob_state.last_updated is not None
-                        and (datetime.now(tz=UTC) - no_clob_state.last_updated).total_seconds() < 60
+                        and (datetime.now(tz=UTC) - no_clob_state.last_updated).total_seconds() < 300
                     )
                     if no_clob_fresh:
                         assert no_clob_state is not None
@@ -2021,6 +2024,14 @@ class BotOrchestrator:
                         signal_conf = float(sig.confidence.overall) if sig.confidence else 0.5
                         conf_factor = max(0.3, min(1.0, (signal_conf - 0.40) / 0.55))
                         position_size = position_size * Decimal(str(round(conf_factor, 4)))
+
+                        # Floor: never drop below Polymarket CLOB minimum (5 tokens)
+                        # plus a small buffer.  Without this, confidence scaling on
+                        # small balances can produce 2-3 token orders that get rejected.
+                        _MIN_TOKENS = Decimal("6")
+                        if position_size < _MIN_TOKENS and position_size > 0:
+                            position_size = _MIN_TOKENS
+
                         logger.info(
                             "confidence_position_scaling",
                             signal_confidence=round(signal_conf, 4),
