@@ -45,6 +45,10 @@ def _clob_order_type(order_type: OrderType) -> Any:
         return ClobOrderType.GTC
     if order_type == OrderType.FOK:
         return ClobOrderType.FOK
+    if order_type == OrderType.FAK:
+        return ClobOrderType.FAK
+    if order_type == OrderType.GTD:
+        return ClobOrderType.GTD
     # Default to GTC for LIMIT/MARKET
     return ClobOrderType.GTC
 
@@ -73,6 +77,7 @@ def _create_order_args(
     price: float,
     size: float,
     side: str,
+    expiration: int = 0,
 ) -> Any:
     """Create OrderArgs with deferred import."""
     from py_clob_client.clob_types import OrderArgs
@@ -82,6 +87,7 @@ def _create_order_args(
         price=price,
         size=size,
         side=side,
+        expiration=expiration,
     )
 
 
@@ -181,6 +187,7 @@ class PolymarketLiveTrader:
         size: Decimal,
         strategy_id: str = "",
         max_price: Decimal | None = None,
+        expiration: int | None = None,
     ) -> Order:
         """Sign and submit an order to the Polymarket CLOB.
 
@@ -221,7 +228,7 @@ class PolymarketLiveTrader:
             # market to rest as a maker order.
             # Non-GTC BUY: fetch best ask to cross the spread (taker fill).
             # SELL: floor price so ask <= market.
-            is_gtc = order_type == OrderType.GTC
+            is_gtc = order_type in (OrderType.GTC, OrderType.GTD)
             if side == OrderSide.BUY:
                 if is_gtc:
                     # GTC: use the model price (already discounted by bot).
@@ -274,6 +281,7 @@ class PolymarketLiveTrader:
                 price=rounded_price,
                 size=rounded_size,
                 side=clob_side,
+                expiration=expiration or 0,
             )
 
             signed_order = self._clob_client.create_order(order_args)
@@ -305,14 +313,15 @@ class PolymarketLiveTrader:
                 log_order_event("live_rejected", oid, reason=str(error_msg))
                 return order
 
-            # FOK orders are filled entirely or cancelled — if we get an
-            # orderID back, the order was filled. GTC orders sit in the book.
-            is_fok = order_type in (OrderType.FOK,)
-            fill_status = OrderStatus.FILLED if is_fok else OrderStatus.SUBMITTED
+            # FOK/FAK orders are taker orders — if we get an orderID back,
+            # the order was filled (FOK fully, FAK partially or fully).
+            # GTC/GTD orders sit in the book.
+            is_taker = order_type in (OrderType.FOK, OrderType.FAK)
+            fill_status = OrderStatus.FILLED if is_taker else OrderStatus.SUBMITTED
             # Use actual submitted price/size (after book adjustment), not
             # the model price/size the bot originally requested.
-            actual_fill_price = Decimal(str(rounded_price)) if is_fok else None
-            actual_fill_size = Decimal(str(rounded_size)) if is_fok else None
+            actual_fill_price = Decimal(str(rounded_price)) if is_taker else None
+            actual_fill_size = Decimal(str(rounded_size)) if is_taker else None
             order = order.model_copy(update={
                 "status": fill_status,
                 "exchange_order_id": str(exchange_id),
@@ -321,12 +330,12 @@ class PolymarketLiveTrader:
                 "updated_at": datetime.now(tz=UTC),
             })
             self._orders[oid] = order
-            event_name = "live_filled" if is_fok else "live_submitted"
+            event_name = "live_filled" if is_taker else "live_submitted"
             log_order_event(
                 event_name, oid,
                 exchange_order_id=str(exchange_id),
-                fill_price=str(rounded_price) if is_fok else None,
-                fill_size=str(rounded_size) if is_fok else None,
+                fill_price=str(rounded_price) if is_taker else None,
+                fill_size=str(rounded_size) if is_taker else None,
             )
 
         except Exception as exc:

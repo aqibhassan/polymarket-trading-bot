@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -57,6 +58,7 @@ class PolymarketWSFeed:
         self._recv_task: asyncio.Task[None] | None = None
         self._subscribed_assets: set[str] = set()
         self._clob_state: dict[str, CLOBState] = {}
+        self._liquidity_callbacks: list[Callable] = []
         self._backoff = 1.0
         self._max_backoff = 60.0
 
@@ -67,6 +69,14 @@ class PolymarketWSFeed:
     def get_clob_state(self, token_id: str) -> CLOBState | None:
         """Get current CLOB state for a token. Returns None if not tracked."""
         return self._clob_state.get(token_id)
+
+    def register_liquidity_callback(self, callback: Callable) -> None:
+        """Register callback for when real liquidity appears on the book.
+
+        Callback signature: (token_id: str, best_bid: Decimal, best_ask: Decimal, size: Decimal) -> None
+        Async callbacks are supported — they will be scheduled via asyncio.create_task().
+        """
+        self._liquidity_callbacks.append(callback)
 
     def seed_rest_data(
         self,
@@ -297,35 +307,116 @@ class PolymarketWSFeed:
             self._emit_orderbook(data, now)
 
     def _handle_price_change(self, data: dict[str, Any], now: datetime) -> None:
-        """Handle incremental price change event (includes best_bid/best_ask)."""
+        """Handle incremental price change event (includes best_bid/best_ask).
+
+        Supports two Polymarket formats:
+
+        1. **Nested ``price_changes``** (primary format)::
+
+            {"event_type": "price_change", "market": "cond_id",
+             "price_changes": [{"asset_id": "...", "price": "0.55",
+              "size": "50", "side": "BUY", "best_bid": "0.55", "best_ask": "0.60"}]}
+
+        2. **Flat format** — top-level ``asset_id``, ``price``, ``side``,
+           ``best_bid``, ``best_ask``, and/or ``changes`` array of
+           ``[side, price, size]`` tuples.
+
+        When real liquidity is detected (non-placeholder, spread < 0.80),
+        invokes all registered liquidity callbacks.
+        """
+        condition_id = data.get("market", "")
+
+        # --- Handle nested price_changes array (primary Polymarket format) ---
+        price_changes = data.get("price_changes", [])
+        if price_changes:
+            for pc in price_changes:
+                if not isinstance(pc, dict):
+                    continue
+                pc_asset = pc.get("asset_id", "")
+                if not pc_asset:
+                    continue
+                self._apply_price_change_entry(pc_asset, pc, now, condition_id)
+            return
+
+        # --- Flat format: top-level asset_id ---
         asset_id = data.get("asset_id", "")
         if not asset_id:
             return
+        self._apply_price_change_entry(asset_id, data, now, condition_id)
 
+    def _apply_price_change_entry(
+        self,
+        asset_id: str,
+        entry: dict[str, Any],
+        now: datetime,
+        condition_id: str = "",
+    ) -> None:
+        """Apply a single price-change entry (from nested or flat format)."""
         state = self._clob_state.setdefault(asset_id, CLOBState())
+        max_change_size = Decimal("0")
 
-        changes = data.get("changes", [])
-        # changes is a list of [side, price, size] arrays
-        # We update best_bid/best_ask from the "price" field in the event
-        price_str = data.get("price")
+        # Top-level price/side
+        price_str = entry.get("price")
         if price_str is not None:
-            price = Decimal(str(price_str))
-            side = data.get("side", "").lower()
-            if side == "buy" or side == "bid":
-                state.best_bid = price
-            elif side == "sell" or side == "ask":
-                state.best_ask = price
+            try:
+                price = Decimal(str(price_str))
+                side = entry.get("side", "").lower()
+                if side in ("buy", "bid"):
+                    state.best_bid = price
+                elif side in ("sell", "ask"):
+                    state.best_ask = price
+            except (ValueError, TypeError, ArithmeticError):
+                pass
 
-        # Some events carry explicit best_bid / best_ask
-        if "best_bid" in data:
-            state.best_bid = Decimal(str(data["best_bid"]))
-        if "best_ask" in data:
-            state.best_ask = Decimal(str(data["best_ask"]))
+        # Size tracking
+        size_str = entry.get("size")
+        if size_str is not None:
+            try:
+                max_change_size = Decimal(str(size_str))
+            except (ValueError, TypeError, ArithmeticError):
+                pass
+
+        # Parse changes array: each element is [side, price, size]
+        changes = entry.get("changes", [])
+        for change in changes:
+            if not isinstance(change, list) or len(change) < 3:
+                continue
+            c_side, c_price_str, c_size_str = change[0], change[1], change[2]
+            try:
+                c_price = Decimal(str(c_price_str))
+                c_size = Decimal(str(c_size_str))
+            except (ValueError, TypeError, ArithmeticError):
+                continue
+            c_side_lower = str(c_side).lower()
+            if c_side_lower in ("buy", "bid"):
+                if state.best_bid is None or c_price > state.best_bid:
+                    state.best_bid = c_price
+            elif c_side_lower in ("sell", "ask"):
+                if state.best_ask is None or c_price < state.best_ask:
+                    state.best_ask = c_price
+            if c_size > max_change_size:
+                max_change_size = c_size
+
+        # Explicit best_bid / best_ask override everything
+        if "best_bid" in entry:
+            try:
+                state.best_bid = Decimal(str(entry["best_bid"]))
+            except (ValueError, TypeError, ArithmeticError):
+                pass
+        if "best_ask" in entry:
+            try:
+                state.best_ask = Decimal(str(entry["best_ask"]))
+            except (ValueError, TypeError, ArithmeticError):
+                pass
 
         if state.best_bid is not None and state.best_ask is not None:
             state.midpoint = (state.best_bid + state.best_ask) / 2
 
         state.last_updated = now
+
+        # Liquidity detection — invoke callbacks for real (non-placeholder) prices
+        if state.best_bid is not None and state.best_ask is not None:
+            self._check_liquidity(asset_id, state.best_bid, state.best_ask, max_change_size)
 
     def _handle_last_trade_price(self, data: dict[str, Any], now: datetime) -> None:
         """Handle trade execution event."""
@@ -338,6 +429,50 @@ class PolymarketWSFeed:
         if price_str is not None:
             state.last_trade_price = Decimal(str(price_str))
         state.last_updated = now
+
+    # -- Placeholder thresholds for liquidity detection --
+    _PLACEHOLDER_BIDS = frozenset([Decimal("0.01"), Decimal("0.001")])
+    _PLACEHOLDER_ASKS = frozenset([Decimal("0.99"), Decimal("0.999")])
+    _MAX_REAL_SPREAD = Decimal("0.80")
+    _MIN_REAL_BID = Decimal("0.10")
+    _MAX_REAL_ASK = Decimal("0.90")
+
+    def _check_liquidity(
+        self,
+        token_id: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        size: Decimal,
+    ) -> None:
+        """Check whether prices represent real liquidity and invoke callbacks.
+
+        Filters out placeholder prices (0.01/0.99, 0.001/0.999) and only
+        triggers when spread < 0.80, bid > 0.10, ask < 0.90.
+        """
+        if best_bid in self._PLACEHOLDER_BIDS or best_ask in self._PLACEHOLDER_ASKS:
+            return
+        if best_bid < self._MIN_REAL_BID or best_ask > self._MAX_REAL_ASK:
+            return
+        spread = best_ask - best_bid
+        if spread >= self._MAX_REAL_SPREAD or spread <= 0:
+            return
+
+        log.info(
+            "ws_price_change_detected",
+            token_id=token_id[:16],
+            best_bid=str(best_bid),
+            best_ask=str(best_ask),
+            spread=str(spread),
+            size=str(size),
+        )
+
+        for cb in self._liquidity_callbacks:
+            try:
+                result = cb(token_id, best_bid, best_ask, size)
+                if inspect.isawaitable(result):
+                    asyncio.create_task(result)
+            except Exception:
+                log.warning("liquidity_callback_error", token_id=token_id[:16], exc_info=True)
 
     def _emit_market_state(self, data: dict[str, Any], now: datetime) -> None:
         """Build and emit a MarketState from WS data."""

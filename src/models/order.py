@@ -20,6 +20,8 @@ class OrderType(str, Enum):
     MARKET = "MARKET"
     FOK = "FOK"
     GTC = "GTC"
+    FAK = "FAK"
+    GTD = "GTD"
 
 
 class OrderStatus(str, Enum):

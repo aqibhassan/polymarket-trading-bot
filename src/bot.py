@@ -285,23 +285,55 @@ class BotOrchestrator:
         *,
         fok_spread_threshold: Decimal = Decimal("0.30"),
         fok_late_minute: int = 11,
+        use_fak_taker: bool = True,
     ) -> "OrderType":
-        """Choose GTC (maker) or FOK (taker) based on minute in window.
+        """Choose GTC (maker) or FAK/FOK (taker) based on minute and spread.
 
         GTC-first strategy: place limit orders early when liquidity exists,
-        let them rest and fill. FOK only as a last-chance crossing in the
+        let them rest and fill. FAK/FOK only as a last-chance crossing in the
         final minutes of the window.
 
-        GTC for minutes < fok_late_minute (default 11).
-        FOK for minutes >= fok_late_minute (last-chance taker crossing).
+        Additionally, if real liquidity is detected mid-window (spread below
+        threshold AND minute >= 5), switch to FAK to cross immediately.
+
+        GTC for minutes < 5 (always passive early).
+        FAK/FOK for minutes >= fok_late_minute (last-chance taker crossing).
+        FAK for minutes 5-10 when spread < fok_spread_threshold (liquidity detected).
         """
         from src.models.order import OrderType
 
-        late_window = minute_in_window >= fok_late_minute
+        taker_type = OrderType.FAK if use_fak_taker else OrderType.FOK
 
+        late_window = minute_in_window >= fok_late_minute
         if late_window:
-            return OrderType.FOK
+            return taker_type
+
+        # P6: Mid-window spread trigger — real liquidity appeared
+        if minute_in_window >= 5 and clob_spread < fok_spread_threshold:
+            return taker_type
+
         return OrderType.GTC
+
+    @staticmethod
+    def _get_price_ladder_offset(minute: int, config: dict) -> Decimal:
+        """Return price offset for the current minute in the window.
+
+        Time-escalating ladder: passive early, aggressive late.
+        Minutes 0-4: no offset (post at market).
+        Minutes 5-7: small offset (+3c default).
+        Minutes 8-9: medium offset (+7c default).
+        Minute 10+: large offset (+10c default).
+        Minutes 11+: FAK taker crosses spread (ladder not applied).
+        """
+        if not config.get("price_ladder_enabled", False):
+            return Decimal("0")
+        if minute >= 10:
+            return Decimal(str(config.get("price_ladder_offset_min10", 0.10)))
+        if minute >= 8:
+            return Decimal(str(config.get("price_ladder_offset_min8", 0.07)))
+        if minute >= 5:
+            return Decimal(str(config.get("price_ladder_offset_min5", 0.03)))
+        return Decimal(str(config.get("price_ladder_offset_min2", 0.00)))
 
     @staticmethod
     def _window_start_ts(epoch_s: int) -> int:
@@ -601,6 +633,44 @@ class BotOrchestrator:
             str(self._config.get("execution.pricing.fok_max_entry_price", 0.85))
         )
 
+        # FAK/GTD config
+        use_fak_taker = bool(
+            self._config.get("execution.pricing.use_fak_taker", True)
+        )
+        use_gtd_expiry = bool(
+            self._config.get("execution.pricing.use_gtd_expiry", False)
+        )
+        gtd_expiry_buffer_seconds = int(
+            self._config.get("execution.pricing.gtd_expiry_buffer_seconds", 60)
+        )
+
+        # Price ladder config (read as dict for _get_price_ladder_offset)
+        pricing_config: dict[str, Any] = {
+            "price_ladder_enabled": bool(
+                self._config.get("execution.pricing.price_ladder_enabled", False)
+            ),
+            "price_ladder_offset_min2": float(
+                self._config.get("execution.pricing.price_ladder_offset_min2", 0.00)
+            ),
+            "price_ladder_offset_min5": float(
+                self._config.get("execution.pricing.price_ladder_offset_min5", 0.03)
+            ),
+            "price_ladder_offset_min8": float(
+                self._config.get("execution.pricing.price_ladder_offset_min8", 0.07)
+            ),
+            "price_ladder_offset_min10": float(
+                self._config.get("execution.pricing.price_ladder_offset_min10", 0.10)
+            ),
+        }
+
+        # Reactive sweep config
+        reactive_sweep_enabled = bool(
+            self._config.get("execution.pricing.reactive_sweep_enabled", False)
+        )
+        reactive_sweep_max_price = Decimal(
+            str(self._config.get("execution.pricing.reactive_sweep_max_price", 0.65))
+        )
+
         # Confidence-adaptive max entry price config
         conf_adaptive = bool(
             self._config.get("execution.pricing.confidence_adaptive_pricing", False)
@@ -812,6 +882,82 @@ class BotOrchestrator:
         except Exception:
             logger.warning("polymarket_ws_connect_failed", exc_info=True)
             # Bot continues — CLOB data will fallback to REST orderbook
+
+        # Mutable dict for reactive sweep callback (shares state with main loop)
+        _sweep_state: dict[str, Any] = {
+            "pending_gtc_oid": None,
+            "pending_gtc_token_id": None,
+            "pending_gtc_price": None,
+            "position_size": None,
+            "market_id": None,
+            "direction": None,
+            "sweep_filled": False,
+            "sweep_fill_price": None,
+            "sweep_fill_size": None,
+        }
+
+        # P3: Register reactive FAK sweep callback.
+        # When WS detects real counterparty liquidity on a token where we have
+        # a resting GTC, fire a FAK to sweep the liquidity immediately.
+        async def _on_liquidity_detected(
+            token_id: str, best_bid: Decimal, best_ask: Decimal, size: Decimal,
+        ) -> None:
+            if not reactive_sweep_enabled:
+                return
+            sweep_oid = _sweep_state.get("pending_gtc_oid")
+            sweep_token = _sweep_state.get("pending_gtc_token_id")
+            sweep_market = _sweep_state.get("market_id")
+            sweep_size = _sweep_state.get("position_size")
+            if not sweep_oid or not sweep_token or not sweep_market or not sweep_size:
+                return
+            # Only sweep if the liquidity is on our token
+            if token_id != sweep_token:
+                return
+            if best_ask > reactive_sweep_max_price:
+                logger.debug(
+                    "reactive_sweep_price_too_high",
+                    best_ask=str(best_ask),
+                    max_price=str(reactive_sweep_max_price),
+                )
+                return
+            logger.info(
+                "reactive_fak_sweep_triggered",
+                token_id=token_id[:16],
+                best_ask=str(best_ask),
+                size=str(size),
+                pending_oid=str(sweep_oid)[:16],
+            )
+            try:
+                # Cancel the resting GTC first
+                _cancelled = await bridge.cancel_order(sweep_oid)
+                if _cancelled:
+                    _sweep_order = await bridge.submit_order(
+                        market_id=sweep_market,
+                        token_id=sweep_token,
+                        side=OrderSide.BUY,
+                        order_type=OrderType.FAK if use_fak_taker else OrderType.FOK,
+                        price=best_ask,
+                        size=sweep_size,
+                        strategy_id=self._strategy_name,
+                        max_price=reactive_sweep_max_price,
+                    )
+                    logger.info(
+                        "reactive_fak_sweep_result",
+                        status=_sweep_order.status.value,
+                        fill_size=str(_sweep_order.filled_size),
+                        price=str(best_ask),
+                    )
+                    # Signal main loop about sweep outcome so it doesn't
+                    # reopen a position when it sees GTC cancelled.
+                    if _sweep_order.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                        _sweep_state["sweep_filled"] = True
+                        _sweep_state["sweep_fill_price"] = str(best_ask)
+                        _sweep_state["sweep_fill_size"] = str(_sweep_order.filled_size or sweep_size)
+                    _sweep_state["pending_gtc_oid"] = None
+            except Exception:
+                logger.debug("reactive_fak_sweep_failed", exc_info=True)
+
+        poly_ws_feed.register_liquidity_callback(_on_liquidity_detected)
         ws_connected = True
         self._touch_sentinel(_WS_CONNECTED_FILE)
 
@@ -867,6 +1013,8 @@ class BotOrchestrator:
         current_subscribed_yes: str | None = None  # YES token subscribed on poly WS
         current_subscribed_no: str | None = None  # NO token subscribed on poly WS
         last_clob_snapshot_minute: int = -1  # Track per-minute CLOB snapshots
+        pending_gtc_price: Decimal | None = None  # Price of the resting GTC for ladder repost
+        pending_gtc_token_id: str | None = None  # Token ID of resting GTC for reactive sweep
         window_activity_published = False  # one event per 15-min window
         window_last_skip_eval: dict[str, Any] = {}  # accumulate last skip reason
 
@@ -986,6 +1134,10 @@ class BotOrchestrator:
                         pending_gtc_oid = None
                         pending_gtc_internal_id = None
                         pending_gtc_position = False
+                        pending_gtc_price = None
+                        pending_gtc_token_id = None
+                        _sweep_state["pending_gtc_oid"] = None
+                        _sweep_state["sweep_filled"] = False
 
                     # Force-close any open position at window end
                     if has_open_position and last_entry_price is not None:
@@ -1629,6 +1781,9 @@ class BotOrchestrator:
                             pending_gtc_oid = None
                             pending_gtc_internal_id = None
                             pending_gtc_position = False
+                            pending_gtc_price = None
+                            pending_gtc_token_id = None
+                            _sweep_state["pending_gtc_oid"] = None
                             trade_count += 1
                             logger.info(
                                 "gtc_filled_mid_tick",
@@ -1639,9 +1794,33 @@ class BotOrchestrator:
                             pending_gtc_oid = None
                             pending_gtc_internal_id = None
                             pending_gtc_position = False
-                            logger.info(
-                                "gtc_cancelled_mid_tick", status=_gtc_st,
-                            )
+                            pending_gtc_price = None
+                            pending_gtc_token_id = None
+                            _sweep_state["pending_gtc_oid"] = None
+                            # Check if reactive sweep filled before GTC was
+                            # detected as cancelled — prevents duplicate entry
+                            if _sweep_state.get("sweep_filled"):
+                                has_open_position = True
+                                trade_count += 1
+                                _sf_price = _sweep_state.get("sweep_fill_price")
+                                _sf_size = _sweep_state.get("sweep_fill_size")
+                                if _sf_price:
+                                    last_entry_price = Decimal(str(_sf_price))
+                                if _sf_size:
+                                    last_position_size = Decimal(str(_sf_size))
+                                _sweep_state["sweep_filled"] = False
+                                _sweep_state["sweep_fill_price"] = None
+                                _sweep_state["sweep_fill_size"] = None
+                                logger.info(
+                                    "reactive_sweep_position_opened",
+                                    price=str(last_entry_price),
+                                    size=str(last_position_size),
+                                    minute=minute_in_window,
+                                )
+                            else:
+                                logger.info(
+                                    "gtc_cancelled_mid_tick", status=_gtc_st,
+                                )
                         else:
                             # Still resting — check if we should upgrade to FOK
                             # Use direction-aware spread for upgrade decision
@@ -1657,69 +1836,153 @@ class BotOrchestrator:
                                 minute_in_window=minute_in_window,
                                 fok_spread_threshold=fok_spread_threshold,
                                 fok_late_minute=fok_late_minute,
+                                use_fak_taker=use_fak_taker,
                             )
-                            if _new_type == OrderType.FOK:
+                            _taker_type = OrderType.FAK if use_fak_taker else OrderType.FOK
+                            if _new_type == _taker_type:
                                 _cancel_id = (
                                     pending_gtc_internal_id or pending_gtc_oid
                                 )
                                 _cancelled = await bridge.cancel_order(_cancel_id)
                                 if _cancelled and last_entry_side in ("YES", "NO"):
-                                    # Price for FOK: use appropriate token side
-                                    _fok_price: Decimal | None = None
+                                    # Price for FAK/FOK: use appropriate token side
+                                    _fak_price: Decimal | None = None
                                     if last_entry_side == "YES":
-                                        _fok_price = clob_best_ask
+                                        _fak_price = clob_best_ask
                                     elif last_entry_side == "NO":
-                                        _fok_price = no_clob_best_ask or (
+                                        _fak_price = no_clob_best_ask or (
                                             Decimal("1") - clob_best_bid
                                             if clob_best_bid
                                             else None
                                         )
-                                    # Apply confidence-adaptive max to mid-tick FOK upgrade
-                                    _upgrade_fok_max = fok_max_entry_price
+                                    # Apply confidence-adaptive max to mid-tick upgrade
+                                    _upgrade_fak_max = fok_max_entry_price
                                     if conf_adaptive and last_confidence > float(conf_adaptive_base):
                                         _up_boost = Decimal(str(last_confidence - float(conf_adaptive_base))) * conf_adaptive_scale
-                                        _upgrade_fok_max = min(fok_max_entry_price + _up_boost, conf_adaptive_cap)
+                                        _upgrade_fak_max = min(fok_max_entry_price + _up_boost, conf_adaptive_cap)
                                     if (
-                                        _fok_price is not None
-                                        and _fok_price <= _upgrade_fok_max
+                                        _fak_price is not None
+                                        and _fak_price <= _upgrade_fak_max
                                         and last_token_id
                                         and last_market_id
                                     ):
-                                        _fok_order = await bridge.submit_order(
+                                        _fak_order = await bridge.submit_order(
                                             market_id=last_market_id,
                                             token_id=last_token_id,
                                             side=OrderSide.BUY,
-                                            order_type=OrderType.FOK,
-                                            price=_fok_price,
+                                            order_type=_taker_type,
+                                            price=_fak_price,
                                             size=last_position_size
                                             or Decimal("0"),
                                             strategy_id=self._strategy.name,
-                                            max_price=_upgrade_fok_max,
+                                            max_price=_upgrade_fak_max,
                                         )
                                         if (
-                                            _fok_order.status
+                                            _fak_order.status
                                             == OrderStatus.FILLED
                                         ):
                                             has_open_position = True
                                             trade_count += 1
                                             last_entry_price = (
-                                                _fok_order.avg_fill_price
-                                                or _fok_price
+                                                _fak_order.avg_fill_price
+                                                or _fak_price
                                             )
                                             logger.info(
-                                                "gtc_upgraded_to_fok",
-                                                price=str(_fok_price),
+                                                "gtc_upgraded_to_fak",
+                                                price=str(_fak_price),
+                                                minute=minute_in_window,
+                                            )
+                                        elif _fak_order.status == OrderStatus.PARTIALLY_FILLED:
+                                            has_open_position = True
+                                            trade_count += 1
+                                            last_entry_price = (
+                                                _fak_order.avg_fill_price
+                                                or _fak_price
+                                            )
+                                            last_position_size = _fak_order.filled_size or last_position_size
+                                            logger.info(
+                                                "fak_upgrade_partial_fill",
+                                                price=str(_fak_price),
+                                                filled=str(_fak_order.filled_size),
                                                 minute=minute_in_window,
                                             )
                                         else:
                                             logger.info(
-                                                "fok_upgrade_not_filled",
-                                                price=str(_fok_price),
-                                                status=_fok_order.status.value,
+                                                "fak_upgrade_not_filled",
+                                                price=str(_fak_price),
+                                                status=_fak_order.status.value,
                                             )
                                     pending_gtc_oid = None
                                     pending_gtc_internal_id = None
                                     pending_gtc_position = False
+                                    pending_gtc_price = None
+                                    pending_gtc_token_id = None
+                                    _sweep_state["pending_gtc_oid"] = None
+                            else:
+                                # P2: Price ladder repost — check if ladder offset
+                                # has increased since GTC was placed
+                                new_ladder_offset = self._get_price_ladder_offset(
+                                    minute_in_window, pricing_config,
+                                )
+                                if (
+                                    pending_gtc_price is not None
+                                    and new_ladder_offset > Decimal("0")
+                                    and last_entry_price is not None
+                                ):
+                                    new_ladder_price = min(
+                                        last_entry_price + new_ladder_offset,
+                                        effective_max_clob if conf_adaptive else max_clob_entry_price,
+                                    )
+                                    if new_ladder_price > pending_gtc_price:
+                                        # Cancel old GTC and repost at higher ladder price
+                                        _repost_id = pending_gtc_internal_id or pending_gtc_oid
+                                        _repost_ok = await bridge.cancel_order(_repost_id)
+                                        if _repost_ok and last_token_id and last_market_id:
+                                            # Reuse GTD if enabled
+                                            _repost_type = OrderType.GTC
+                                            _repost_exp: int | None = None
+                                            if use_gtd_expiry and current_window_start is not None:
+                                                _repost_type = OrderType.GTD
+                                                _repost_exp = current_window_start + 900 - gtd_expiry_buffer_seconds
+                                            _repost_order = await bridge.submit_order(
+                                                market_id=last_market_id,
+                                                token_id=last_token_id,
+                                                side=OrderSide.BUY,
+                                                order_type=_repost_type,
+                                                price=new_ladder_price,
+                                                size=last_position_size or Decimal("0"),
+                                                strategy_id=self._strategy.name,
+                                                max_price=max_clob_entry_price,
+                                                expiration=_repost_exp,
+                                            )
+                                            if _repost_order.status == OrderStatus.SUBMITTED:
+                                                _old_gtc_price = pending_gtc_price
+                                                pending_gtc_oid = _repost_order.exchange_order_id
+                                                pending_gtc_internal_id = str(_repost_order.id)
+                                                pending_gtc_price = new_ladder_price
+                                                _sweep_state["pending_gtc_oid"] = pending_gtc_oid
+                                                logger.info(
+                                                    "price_ladder_repost",
+                                                    old_price=str(_old_gtc_price),
+                                                    new_price=str(new_ladder_price),
+                                                    offset=str(new_ladder_offset),
+                                                    minute=minute_in_window,
+                                                )
+                                            elif _repost_order.status == OrderStatus.FILLED:
+                                                has_open_position = True
+                                                trade_count += 1
+                                                last_entry_price = _repost_order.avg_fill_price or new_ladder_price
+                                                pending_gtc_oid = None
+                                                pending_gtc_internal_id = None
+                                                pending_gtc_position = False
+                                                pending_gtc_price = None
+                                                pending_gtc_token_id = None
+                                                _sweep_state["pending_gtc_oid"] = None
+                                                logger.info(
+                                                    "price_ladder_repost_filled",
+                                                    price=str(new_ladder_price),
+                                                    minute=minute_in_window,
+                                                )
                     except Exception:
                         logger.debug(
                             "mid_tick_gtc_check_failed", exc_info=True,
@@ -1794,6 +2057,7 @@ class BotOrchestrator:
                                 minute_in_window=minute_in_window,
                                 fok_spread_threshold=fok_spread_threshold,
                                 fok_late_minute=fok_late_minute,
+                                use_fak_taker=use_fak_taker,
                             )
                             if bridge.mode == "live"
                             else OrderType.LIMIT
@@ -1905,34 +2169,34 @@ class BotOrchestrator:
                             )
                             continue  # Skip — no real exchange price
 
-                        # FOK price override: use best_ask to cross the spread.
+                        # FAK/FOK price override: use best_ask to cross the spread.
                         # The signer does this too, but we want the correct price
                         # for sizing and max-price validation.
                         # Fallback: invert the opposite token's best_bid when the
                         # target token has no WS data (common on illiquid 15m markets).
-                        if order_type_selected == OrderType.FOK:
+                        if order_type_selected in (OrderType.FAK, OrderType.FOK):
                             if sig.direction == Side.YES:
-                                _fok_ask = clob_best_ask
-                                if _fok_ask is None and no_clob_best_bid is not None:
-                                    _fok_ask = Decimal("1") - no_clob_best_bid
-                                if _fok_ask is not None:
-                                    entry_price = _fok_ask
-                                    price_source = "clob_best_ask_fok"
+                                _fak_ask = clob_best_ask
+                                if _fak_ask is None and no_clob_best_bid is not None:
+                                    _fak_ask = Decimal("1") - no_clob_best_bid
+                                if _fak_ask is not None:
+                                    entry_price = _fak_ask
+                                    price_source = "clob_best_ask_fak"
                             elif sig.direction == Side.NO:
-                                _fok_ask = no_clob_best_ask
-                                if _fok_ask is None and clob_best_bid is not None:
-                                    _fok_ask = Decimal("1") - clob_best_bid
-                                if _fok_ask is not None:
-                                    entry_price = _fok_ask
-                                    price_source = "no_clob_best_ask_fok"
-                            # FOK MUST have a real ask to cross; skip if we
+                                _fak_ask = no_clob_best_ask
+                                if _fak_ask is None and clob_best_bid is not None:
+                                    _fak_ask = Decimal("1") - clob_best_bid
+                                if _fak_ask is not None:
+                                    entry_price = _fak_ask
+                                    price_source = "no_clob_best_ask_fak"
+                            # FAK/FOK MUST have a real ask to cross; skip if we
                             # could not determine one from either token.
                             if price_source not in (
-                                "clob_best_ask_fok",
-                                "no_clob_best_ask_fok",
+                                "clob_best_ask_fak",
+                                "no_clob_best_ask_fak",
                             ):
                                 logger.info(
-                                    "fok_no_real_ask_to_cross",
+                                    "fak_no_real_ask_to_cross",
                                     price=str(entry_price),
                                     source=price_source,
                                     minute=minute_in_window,
@@ -1962,14 +2226,14 @@ class BotOrchestrator:
 
                         _effective_max = (
                             effective_fok_max
-                            if order_type_selected == OrderType.FOK
+                            if order_type_selected in (OrderType.FOK, OrderType.FAK)
                             else effective_max_clob
                         )
                         if conf_adaptive:
                             logger.info(
                                 "confidence_adaptive_pricing",
                                 effective_max=str(_effective_max),
-                                base_max=str(max_clob_entry_price if order_type_selected != OrderType.FOK else fok_max_entry_price),
+                                base_max=str(max_clob_entry_price if order_type_selected not in (OrderType.FOK, OrderType.FAK) else fok_max_entry_price),
                                 confidence=round(_sig_conf, 4),
                                 order_type=order_type_selected.value,
                             )
@@ -2069,6 +2333,26 @@ class BotOrchestrator:
                                 signal_confidence=round(signal_conf, 4),
                             )
 
+                        # P2: Time-escalating price ladder — add offset for GTC orders
+                        # to improve fill probability as window ages. Not applied to
+                        # FAK/FOK taker orders (they cross the spread already).
+                        if order_type_selected not in (OrderType.FAK, OrderType.FOK):
+                            ladder_offset = self._get_price_ladder_offset(
+                                minute_in_window, pricing_config,
+                            )
+                            if ladder_offset > 0:
+                                old_price = entry_price
+                                entry_price = min(
+                                    entry_price + ladder_offset, _effective_max,
+                                )
+                                logger.info(
+                                    "price_ladder_applied",
+                                    old_price=str(old_price),
+                                    new_price=str(entry_price),
+                                    offset=str(ladder_offset),
+                                    minute=minute_in_window,
+                                )
+
                         # Publish sizing details to Redis for dashboard
                         try:
                             await cache.set("bot:sizing", {
@@ -2145,18 +2429,39 @@ class BotOrchestrator:
                             )
                             live_mode = bridge.mode == "live"
 
-                            # Live: dynamic order type (GTC maker or FOK taker).
-                            # GTC rests in the book; FOK fills immediately or rejects.
+                            # P5: GTD auto-expiry — if placing a GTC and GTD is enabled,
+                            # convert to GTD with expiration = window_end - buffer.
+                            _order_expiration: int | None = None
+                            _actual_order_type = order_type_selected
+                            if (
+                                use_gtd_expiry
+                                and order_type_selected == OrderType.GTC
+                                and current_window_start is not None
+                                and live_mode
+                            ):
+                                _window_end_ts = current_window_start + 900  # 15 min window
+                                _order_expiration = _window_end_ts - gtd_expiry_buffer_seconds
+                                _actual_order_type = OrderType.GTD
+                                logger.info(
+                                    "gtd_auto_expiry",
+                                    window_end=_window_end_ts,
+                                    expiration=_order_expiration,
+                                    buffer_seconds=gtd_expiry_buffer_seconds,
+                                )
+
+                            # Live: dynamic order type (GTC maker or FAK/FOK taker).
+                            # GTC/GTD rests in the book; FAK fills partially or rejects.
                             # Paper: instant-fill LIMIT (PaperTrader always fills).
                             entry_order = await bridge.submit_order(
                                 market_id=sig.market_id,
                                 token_id=token_id,
                                 side=OrderSide.BUY,
-                                order_type=order_type_selected,
+                                order_type=_actual_order_type,
                                 price=entry_price,
                                 size=position_size,
                                 strategy_id=sig.strategy_id,
                                 max_price=_effective_max,
+                                expiration=_order_expiration,
                             )
                             logger.info(
                                 "order_type_selected",
@@ -2171,30 +2476,37 @@ class BotOrchestrator:
                                 # still have time, retry as a GTC limit at the
                                 # model's entry_price (fair value rests in book).
                                 if (
-                                    order_type_selected == OrderType.FOK
+                                    order_type_selected in (OrderType.FAK, OrderType.FOK)
                                     and minute_in_window <= 13
                                 ):
                                     logger.info(
-                                        "fok_rejected_gtc_fallback",
+                                        "fak_rejected_gtc_fallback",
                                         market_id=sig.market_id,
-                                        fok_price=str(entry_price),
+                                        fak_price=str(entry_price),
                                         minute=minute_in_window,
                                     )
+                                    # Apply GTD auto-expiry to fallback GTC too
+                                    _fb_type = OrderType.GTC
+                                    _fb_exp: int | None = None
+                                    if use_gtd_expiry and current_window_start is not None and live_mode:
+                                        _fb_type = OrderType.GTD
+                                        _fb_exp = current_window_start + 900 - gtd_expiry_buffer_seconds
                                     entry_order = await bridge.submit_order(
                                         market_id=sig.market_id,
                                         token_id=token_id,
                                         side=OrderSide.BUY,
-                                        order_type=OrderType.GTC,
+                                        order_type=_fb_type,
                                         price=entry_price,
                                         size=position_size,
                                         strategy_id=sig.strategy_id,
                                         max_price=effective_max_clob,
+                                        expiration=_fb_exp,
                                     )
                                     # Update selected type for downstream logging
                                     order_type_selected = OrderType.GTC
                                     if entry_order.status == OrderStatus.REJECTED:
                                         logger.warning(
-                                            "fok_gtc_fallback_also_rejected",
+                                            "fak_gtc_fallback_also_rejected",
                                             market_id=sig.market_id,
                                         )
                                         continue
@@ -2213,6 +2525,8 @@ class BotOrchestrator:
                             if live_mode and entry_order.status == OrderStatus.SUBMITTED:
                                 pending_gtc_oid = entry_order.exchange_order_id
                                 pending_gtc_internal_id = str(entry_order.id)
+                                pending_gtc_price = entry_price  # Track for ladder repost
+                                pending_gtc_token_id = token_id  # Track for reactive sweep
                                 logger.info(
                                     "gtc_order_resting",
                                     market_id=sig.market_id,
@@ -2235,8 +2549,16 @@ class BotOrchestrator:
                                 last_entry_minute = minute_in_window
                                 last_cum_return_entry = cum_return * 100
                                 last_fee_cost = costs.fee_cost
+                                # P0: Capture token_id and market_id for mid-tick
+                                # FAK upgrade — without this, upgrades always skip
+                                # because these vars would be None.
                                 last_token_id = token_id
-                                last_market_id = market_id
+                                last_market_id = sig.market_id
+                                logger.info(
+                                    "gtc_state_captured",
+                                    token_id=token_id[:16],
+                                    market_id=sig.market_id[:16],
+                                )
                                 last_condition_id = (
                                     (active_market.condition_id or active_market.market_id)
                                     if active_market else market_id
@@ -2244,6 +2566,13 @@ class BotOrchestrator:
                                 last_signal_details_str = last_signal_details
                                 last_clob_entry_price = clob_last_trade or clob_midpoint or clob_best_ask
                                 last_sigmoid_entry_price = sigmoid_price
+                                # Update reactive sweep state dict so callback can access
+                                _sweep_state["pending_gtc_oid"] = pending_gtc_oid
+                                _sweep_state["pending_gtc_token_id"] = token_id
+                                _sweep_state["pending_gtc_price"] = str(entry_price)
+                                _sweep_state["position_size"] = position_size
+                                _sweep_state["market_id"] = sig.market_id
+                                _sweep_state["direction"] = sig.direction.value
 
                                 # Publish SKIP event for GTC orders — not a real entry until filled
                                 if not window_activity_published:

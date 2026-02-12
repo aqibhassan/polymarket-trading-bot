@@ -129,7 +129,7 @@ max_spread_cents = 0.05
 
 [execution.pricing]
 use_clob_pricing = true
-max_clob_entry_price = 0.80
+max_clob_entry_price = 0.65
 max_clob_spread = 0.50
 
 # FOK (Fill-Or-Kill) taker execution: cross spread when liquidity appears
@@ -152,6 +152,27 @@ use_confidence_discount = false
 use_signal_confidence_kelly = true
 kelly_confidence_floor = 0.80        # never use less than this in Kelly
 kelly_confidence_cap = 0.95          # never use more than this in Kelly
+
+# Time-escalating price ladder: passive early, aggressive late
+# Offset added to entry price based on minute in window
+price_ladder_enabled = true
+price_ladder_offset_min2 = 0.00    # minutes 2-4: post at last_trade (no offset)
+price_ladder_offset_min5 = 0.03    # minutes 5-7: +3 cents aggressive
+price_ladder_offset_min8 = 0.07    # minutes 8-9: +7 cents moderately aggressive
+price_ladder_offset_min10 = 0.10   # minute 10: +10 cents aggressive
+# Minutes 11+: FAK taker at best_ask (no ladder, crosses spread)
+
+# Use FAK (Fill-And-Kill / IOC) instead of FOK for taker orders
+# FAK allows partial fills on thin books — strictly better than FOK
+use_fak_taker = true
+
+# Use GTD (Good-Til-Date) auto-expiry instead of manual GTC cancel
+use_gtd_expiry = true
+gtd_expiry_buffer_seconds = 60     # expire 60s before window settlement
+
+# Reactive FAK sweep: when WS detects counterparty, fire FAK immediately
+reactive_sweep_enabled = true
+reactive_sweep_max_price = 0.65    # never sweep above this price
 
 [bot]
 tick_interval_seconds = 5

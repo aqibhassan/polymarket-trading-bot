@@ -579,10 +579,21 @@ class TestConfidenceDiscount:
 class TestSelectOrderType:
     """Tests for GTC-first order type selection (FOK only for late minutes)."""
 
-    def test_early_minute_always_gtc(self):
-        """Any minute before fok_late_minute → GTC regardless of spread/trades."""
+    def test_early_minute_wide_spread_always_gtc(self):
+        """Minutes 0-4 with wide spread → always GTC (passive early)."""
         from src.models.order import OrderType
-        for minute in range(0, 11):
+        for minute in range(0, 5):
+            result = BotOrchestrator._select_order_type(
+                clob_last_trade=Decimal("0.65"),
+                clob_spread=Decimal("0.50"),
+                minute_in_window=minute,
+            )
+            assert result == OrderType.GTC, f"minute {minute} should be GTC"
+
+    def test_early_minute_narrow_spread_still_gtc(self):
+        """Minutes 0-4 with narrow spread → still GTC (always passive early)."""
+        from src.models.order import OrderType
+        for minute in range(0, 5):
             result = BotOrchestrator._select_order_type(
                 clob_last_trade=Decimal("0.65"),
                 clob_spread=Decimal("0.05"),
@@ -590,18 +601,51 @@ class TestSelectOrderType:
             )
             assert result == OrderType.GTC, f"minute {minute} should be GTC"
 
-    def test_late_window_returns_fok(self):
-        """Late window (min 11+) → always FOK regardless of spread."""
+    def test_mid_window_narrow_spread_returns_fak(self):
+        """Minutes 5-10 with narrow spread → FAK (liquidity detected)."""
+        from src.models.order import OrderType
+        for minute in range(5, 11):
+            result = BotOrchestrator._select_order_type(
+                clob_last_trade=Decimal("0.65"),
+                clob_spread=Decimal("0.05"),
+                minute_in_window=minute,
+            )
+            assert result == OrderType.FAK, f"minute {minute} narrow spread should be FAK"
+
+    def test_mid_window_wide_spread_returns_gtc(self):
+        """Minutes 5-10 with wide spread → GTC (no real liquidity)."""
+        from src.models.order import OrderType
+        for minute in range(5, 11):
+            result = BotOrchestrator._select_order_type(
+                clob_last_trade=Decimal("0.65"),
+                clob_spread=Decimal("0.50"),
+                minute_in_window=minute,
+            )
+            assert result == OrderType.GTC, f"minute {minute} wide spread should be GTC"
+
+    def test_late_window_returns_fak(self):
+        """Late window (min 11+) → always FAK (default use_fak_taker=True)."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
             clob_spread=Decimal("0.50"),
             minute_in_window=12,
         )
+        assert result == OrderType.FAK
+
+    def test_late_window_returns_fok_when_fak_disabled(self):
+        """Late window with use_fak_taker=False → FOK."""
+        from src.models.order import OrderType
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=None,
+            clob_spread=Decimal("0.50"),
+            minute_in_window=12,
+            use_fak_taker=False,
+        )
         assert result == OrderType.FOK
 
     def test_late_window_threshold_exact(self):
-        """Minute exactly at threshold → FOK."""
+        """Minute exactly at threshold → FAK."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
@@ -609,10 +653,10 @@ class TestSelectOrderType:
             minute_in_window=11,
             fok_late_minute=11,
         )
-        assert result == OrderType.FOK
+        assert result == OrderType.FAK
 
-    def test_minute_before_late_threshold_returns_gtc(self):
-        """Minute just before late threshold → GTC."""
+    def test_minute_before_late_threshold_wide_spread_returns_gtc(self):
+        """Minute just before late threshold with wide spread → GTC."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
@@ -625,49 +669,60 @@ class TestSelectOrderType:
     def test_custom_fok_late_minute(self):
         """Custom fok_late_minute threshold is respected."""
         from src.models.order import OrderType
-        # Before custom threshold → GTC
+        # Before custom threshold, wide spread → GTC
         result = BotOrchestrator._select_order_type(
             clob_last_trade=Decimal("0.70"),
-            clob_spread=Decimal("0.05"),
+            clob_spread=Decimal("0.50"),
             minute_in_window=12,
             fok_late_minute=13,
         )
         assert result == OrderType.GTC
-        # At custom threshold → FOK
+        # At custom threshold → FAK
         result = BotOrchestrator._select_order_type(
             clob_last_trade=Decimal("0.70"),
-            clob_spread=Decimal("0.05"),
+            clob_spread=Decimal("0.50"),
             minute_in_window=13,
             fok_late_minute=13,
         )
-        assert result == OrderType.FOK
+        assert result == OrderType.FAK
 
     def test_liquid_market_early_still_gtc(self):
-        """Even tight spread + real trades → GTC before late threshold."""
+        """Even tight spread + real trades → GTC before minute 5."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=Decimal("0.55"),
             clob_spread=Decimal("0.00"),
-            minute_in_window=8,
+            minute_in_window=4,
         )
         assert result == OrderType.GTC
 
-    def test_illiquid_market_late_still_fok(self):
-        """Desert book but late minute → FOK (last-chance crossing)."""
+    def test_illiquid_market_late_still_fak(self):
+        """Desert book but late minute → FAK (last-chance crossing)."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
             clob_spread=Decimal("0.98"),
             minute_in_window=11,
         )
-        assert result == OrderType.FOK
+        assert result == OrderType.FAK
 
-    def test_spread_params_ignored_for_early_minutes(self):
-        """Spread-based params don't affect outcome — only minute matters."""
+    def test_spread_trigger_mid_window(self):
+        """Narrow spread at minute 9 with threshold 0.50 → FAK (liquidity detected)."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=Decimal("0.60"),
             clob_spread=Decimal("0.01"),
+            minute_in_window=9,
+            fok_spread_threshold=Decimal("0.50"),
+        )
+        assert result == OrderType.FAK
+
+    def test_wide_spread_mid_window_stays_gtc(self):
+        """Wide spread at minute 9 → GTC (no real liquidity)."""
+        from src.models.order import OrderType
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.60"),
+            clob_spread=Decimal("0.60"),
             minute_in_window=9,
             fok_spread_threshold=Decimal("0.50"),
         )
