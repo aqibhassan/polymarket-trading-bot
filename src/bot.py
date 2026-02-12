@@ -436,7 +436,7 @@ class BotOrchestrator:
         from datetime import datetime
 
         exit_time = datetime.now(tz=UTC)
-        trade_id = f"paper-{uuid.uuid4().hex[:8]}"
+        trade_id = f"trade-{uuid.uuid4().hex[:8]}"
         # Compute bet-to-win ratio: risking entry_price to win (1 - entry_price)
         ep = float(entry_price) if entry_price else 0
         bet_to_win = ep / (1 - ep) if 0 < ep < 1 else 0.0
@@ -464,8 +464,8 @@ class BotOrchestrator:
         try:
             await ch_store.insert_trade(trade_data)
             await ch_store.insert_audit_event({
-                "order_id": f"paper-ord-{uuid.uuid4().hex[:8]}",
-                "event_type": "PAPER_TRADE_CLOSE",
+                "order_id": f"ord-{uuid.uuid4().hex[:8]}",
+                "event_type": "TRADE_CLOSE",
                 "market_id": market_id,
                 "strategy": self._strategy_name,
                 "details": f"Closed {direction} at {exit_price}, PnL: {pnl}, reason: {exit_reason}",
