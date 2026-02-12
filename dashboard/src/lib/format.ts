@@ -63,3 +63,17 @@ export function formatPnl(v: unknown): { text: string; className: string } {
 export function formatPct(v: unknown, decimals = 1): string {
   return `${safeNum(v).toFixed(decimals)}%`;
 }
+
+/** Normalise audit event types (maps legacy labels to current ones) */
+export function formatEventType(eventType: string): string {
+  const mapping: Record<string, string> = {
+    PAPER_TRADE_CLOSE: 'TRADE_CLOSE',
+    PAPER_TRADE_OPEN: 'TRADE_OPEN',
+  };
+  return mapping[eventType] || eventType;
+}
+
+/** Strip legacy "paper-" prefix from order IDs */
+export function formatOrderId(orderId: string): string {
+  return orderId.replace(/^paper-/, '');
+}

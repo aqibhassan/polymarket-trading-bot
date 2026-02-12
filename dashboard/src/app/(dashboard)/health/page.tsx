@@ -13,7 +13,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { ErrorBanner } from '@/components/ui/error-banner';
-import { formatUTCTime } from '@/lib/format';
+import { formatUTCTime, formatEventType, formatOrderId } from '@/lib/format';
 import type { HealthStatus } from '@/lib/types/bot-state';
 import type { AuditEvent } from '@/lib/types/trade';
 
@@ -222,10 +222,10 @@ export default function HealthPage() {
                         {formatUTCTime(event.timestamp)}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="secondary">{event.event_type}</Badge>
+                        <Badge variant="secondary">{formatEventType(event.event_type)}</Badge>
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-zinc-400" title={event.order_id || ''}>
-                        {(event.order_id || '').slice(0, 8)}...
+                      <TableCell className="font-mono text-xs text-zinc-400" title={formatOrderId(event.order_id || '')}>
+                        {formatOrderId(event.order_id || '').slice(0, 8)}...
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400">
                         {(event.market_id || '').slice(0, 16)}
