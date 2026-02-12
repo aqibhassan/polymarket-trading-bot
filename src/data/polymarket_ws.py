@@ -68,6 +68,62 @@ class PolymarketWSFeed:
         """Get current CLOB state for a token. Returns None if not tracked."""
         return self._clob_state.get(token_id)
 
+    def seed_rest_data(
+        self,
+        token_id: str,
+        last_trade_price: Any,
+        midpoint: Any,
+        spread: Any,
+    ) -> None:
+        """Populate CLOBState from REST API when WS hasn't received data yet.
+
+        Only seeds fields that are currently None (WS data takes priority).
+        """
+        state = self._clob_state.setdefault(token_id, CLOBState())
+        now = datetime.now(tz=UTC)
+
+        # Parse last_trade_price
+        if state.last_trade_price is None and last_trade_price is not None:
+            try:
+                _val = last_trade_price
+                if isinstance(_val, dict):
+                    _val = _val.get("price", _val)
+                _parsed = Decimal(str(_val))
+                if _parsed > 0:
+                    state.last_trade_price = _parsed
+                    log.info("seed_rest_last_trade", token=token_id[:16], price=str(_parsed))
+            except (ValueError, TypeError, ArithmeticError):
+                pass
+
+        # Parse midpoint
+        if state.midpoint is None and midpoint is not None:
+            try:
+                _val = midpoint
+                if isinstance(_val, dict):
+                    _val = _val.get("mid", _val)
+                _parsed = Decimal(str(_val))
+                if _parsed > 0:
+                    state.midpoint = _parsed
+                    log.info("seed_rest_midpoint", token=token_id[:16], mid=str(_parsed))
+            except (ValueError, TypeError, ArithmeticError):
+                pass
+
+        # Parse spread → derive best_bid/best_ask from midpoint if possible
+        if state.best_bid is None and state.midpoint is not None and spread is not None:
+            try:
+                _val = spread
+                if isinstance(_val, dict):
+                    _val = _val.get("spread", _val)
+                _sp = Decimal(str(_val))
+                if _sp >= 0:
+                    state.best_bid = state.midpoint - _sp / 2
+                    state.best_ask = state.midpoint + _sp / 2
+            except (ValueError, TypeError, ArithmeticError):
+                pass
+
+        if state.last_updated is None:
+            state.last_updated = now
+
     async def connect(self) -> None:
         """Connect to Polymarket WebSocket."""
         self._running = True

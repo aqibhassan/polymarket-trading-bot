@@ -1414,6 +1414,7 @@ class BotOrchestrator:
                 no_token_id = active_market.no_token_id
 
                 # Subscribe to Polymarket WS for real-time CLOB prices (both YES + NO)
+                _needs_rest_prime = False
                 if yes_token_id and yes_token_id != current_subscribed_yes:
                     if current_subscribed_yes:
                         try:
@@ -1423,6 +1424,7 @@ class BotOrchestrator:
                     try:
                         await poly_ws_feed.subscribe(yes_token_id)
                         current_subscribed_yes = yes_token_id
+                        _needs_rest_prime = True
                     except Exception:
                         logger.debug("poly_ws_subscribe_yes_failed", exc_info=True)
                 if no_token_id and no_token_id != current_subscribed_no:
@@ -1434,8 +1436,39 @@ class BotOrchestrator:
                     try:
                         await poly_ws_feed.subscribe(no_token_id)
                         current_subscribed_no = no_token_id
+                        _needs_rest_prime = True
                     except Exception:
                         logger.debug("poly_ws_subscribe_no_failed", exc_info=True)
+
+                # REST prime: fetch CLOB data once on new subscription
+                # to fill timing gap before WS stream kicks in.
+                if _needs_rest_prime and bridge.mode == "live" and bridge._live_trader:
+                    _clob_client = bridge._live_trader._clob_client
+                    for _tid, _label in [(yes_token_id, "yes"), (no_token_id, "no")]:
+                        if not _tid:
+                            continue
+                        try:
+                            _rest_ltp = await asyncio.to_thread(
+                                _clob_client.get_last_trade_price, _tid,
+                            )
+                            _rest_mid = await asyncio.to_thread(
+                                _clob_client.get_midpoint, _tid,
+                            )
+                            _rest_spread = await asyncio.to_thread(
+                                _clob_client.get_spread, _tid,
+                            )
+                            logger.info(
+                                "rest_clob_prime",
+                                token=_label,
+                                last_trade=str(_rest_ltp),
+                                midpoint=str(_rest_mid),
+                                spread=str(_rest_spread),
+                            )
+                            poly_ws_feed.seed_rest_data(
+                                _tid, _rest_ltp, _rest_mid, _rest_spread,
+                            )
+                        except Exception:
+                            logger.info("rest_prime_failed", token=_label, exc_info=True)
 
                 market_state = MarketState(
                     market_id=market_id,
@@ -1520,6 +1553,17 @@ class BotOrchestrator:
                         delta=str(clob_best_ask - yes_price),
                     )
 
+                # Log NO token CLOB state for visibility
+                if no_clob_best_ask is not None or no_clob_last_trade is not None:
+                    logger.info(
+                        "no_clob_state",
+                        minute=minute_in_window,
+                        no_best_ask=str(no_clob_best_ask),
+                        no_best_bid=str(no_clob_best_bid),
+                        no_midpoint=str(no_clob_midpoint),
+                        no_last_trade=str(no_clob_last_trade),
+                    )
+
                 # Store CLOB snapshot to ClickHouse (once per minute)
                 if (
                     ch_store is not None
@@ -1595,12 +1639,13 @@ class BotOrchestrator:
                             )
                         else:
                             # Still resting — check if we should upgrade to FOK
-                            _clob_sp = (
-                                (clob_best_ask - clob_best_bid)
-                                if clob_best_ask is not None
-                                and clob_best_bid is not None
-                                else Decimal("1")
-                            )
+                            # Use direction-aware spread for upgrade decision
+                            if last_entry_side == "NO" and no_clob_best_ask is not None and no_clob_best_bid is not None:
+                                _clob_sp = no_clob_best_ask - no_clob_best_bid
+                            elif clob_best_ask is not None and clob_best_bid is not None:
+                                _clob_sp = clob_best_ask - clob_best_bid
+                            else:
+                                _clob_sp = Decimal("1")
                             _new_type = self._select_order_type(
                                 clob_last_trade=clob_last_trade,
                                 clob_spread=_clob_sp,
@@ -1726,12 +1771,14 @@ class BotOrchestrator:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position and not pending_gtc_position:
                         sigmoid_price = sig.entry_price or yes_price
 
-                        # Compute CLOB spread for order-type and gating decisions.
-                        clob_spread = (
-                            (clob_best_ask - clob_best_bid)
-                            if clob_best_ask is not None and clob_best_bid is not None
-                            else Decimal("1")
-                        )
+                        # Compute direction-aware CLOB spread for order-type decisions.
+                        # Use the TARGET token's spread (NO token for NO signals).
+                        if sig.direction == Side.NO and no_clob_best_ask is not None and no_clob_best_bid is not None:
+                            clob_spread = no_clob_best_ask - no_clob_best_bid
+                        elif clob_best_ask is not None and clob_best_bid is not None:
+                            clob_spread = clob_best_ask - clob_best_bid
+                        else:
+                            clob_spread = Decimal("1")
 
                         # Select order type: GTC (maker) or FOK (taker)
                         order_type_selected = (
@@ -1746,19 +1793,9 @@ class BotOrchestrator:
                             else OrderType.LIMIT
                         )
 
-                        # For GTC orders: reject when spread is too wide (no real liquidity).
-                        # FOK orders skip this — they'll cross the spread as takers.
-                        if order_type_selected == OrderType.GTC:
-                            if clob_last_trade is None and clob_spread > max_clob_spread:
-                                logger.info(
-                                    "clob_spread_too_wide",
-                                    spread=str(clob_spread),
-                                    max_allowed=str(max_clob_spread),
-                                    best_bid=str(clob_best_bid),
-                                    best_ask=str(clob_best_ask),
-                                    minute=minute_in_window,
-                                )
-                                continue  # Skip — no real liquidity for GTC
+                        # GTC spread gate REMOVED: GTC is a resting limit order —
+                        # placing at computed_mid on a wide-spread book costs nothing.
+                        # max_clob_entry_price gate (line ~1877) prevents overpaying.
 
                         # --- Entry pricing ---
                         # For NO direction: use real NO token CLOB data if available.
@@ -1797,6 +1834,62 @@ class BotOrchestrator:
                             if sig.direction == Side.NO and entry_price is not None:
                                 entry_price = Decimal("1") - entry_price
                                 price_source = f"{price_source}_inverted_for_NO"
+
+                        # REST fallback: when WS data yields no price or a desert
+                        # computed_mid (~0.50 from 0.01/0.99 book), call REST API.
+                        _is_desert_price = (
+                            "computed_mid" in price_source
+                            and entry_price is not None
+                            and abs(entry_price - Decimal("0.50")) < Decimal("0.05")
+                        )
+                        if (entry_price is None or _is_desert_price) and bridge.mode == "live" and bridge._live_trader:
+                            _clob_client = bridge._live_trader._clob_client
+                            _target_tid = no_token_id if sig.direction == Side.NO else yes_token_id
+                            if _target_tid:
+                                # Try REST last_trade_price (non-blocking)
+                                try:
+                                    _rest_ltp = await asyncio.to_thread(
+                                        _clob_client.get_last_trade_price, _target_tid,
+                                    )
+                                    if _rest_ltp is not None:
+                                        _ltp_val = _rest_ltp
+                                        if isinstance(_ltp_val, dict):
+                                            _ltp_val = _ltp_val.get("price", _ltp_val)
+                                        _parsed_ltp = Decimal(str(_ltp_val))
+                                        if _parsed_ltp > 0:
+                                            entry_price = _parsed_ltp
+                                            _dir_label = "no" if sig.direction == Side.NO else "yes"
+                                            price_source = f"rest_last_trade_{_dir_label}"
+                                            _is_desert_price = False
+                                            logger.info(
+                                                "rest_fallback_price",
+                                                price=str(entry_price),
+                                                source=price_source,
+                                            )
+                                except Exception:
+                                    logger.info("rest_price_fallback_failed", exc_info=True)
+                                # If still no price, try REST midpoint
+                                if entry_price is None or _is_desert_price:
+                                    try:
+                                        _rest_mid = await asyncio.to_thread(
+                                            _clob_client.get_midpoint, _target_tid,
+                                        )
+                                        if _rest_mid is not None:
+                                            _mid_val = _rest_mid
+                                            if isinstance(_mid_val, dict):
+                                                _mid_val = _mid_val.get("mid", _mid_val)
+                                            _parsed_mid = Decimal(str(_mid_val))
+                                            if _parsed_mid > 0:
+                                                entry_price = _parsed_mid
+                                                _dir_label = "no" if sig.direction == Side.NO else "yes"
+                                                price_source = f"rest_midpoint_{_dir_label}"
+                                                logger.info(
+                                                    "rest_fallback_price",
+                                                    price=str(entry_price),
+                                                    source=price_source,
+                                                )
+                                    except Exception:
+                                        logger.info("rest_midpoint_fallback_failed", exc_info=True)
 
                         if entry_price is None or entry_price <= 0:
                             logger.warning(

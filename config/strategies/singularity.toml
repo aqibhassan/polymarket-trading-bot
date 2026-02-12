@@ -32,7 +32,7 @@ weight_vol = 0.14          # volatility regime
 weight_time = 0.13         # time-of-day (neutral meta-signal)
 
 # --- Entry parameters (LIVE-TUNED 2026-02-12) ---
-min_signals_agree = 3       # require 3+ directional signals for robust consensus
+min_signals_agree = 2       # lowered from 3: 2-of-3 majority rule, effective_min floor of 2 validated in backtest
 min_confidence = 0.55       # lowered from 0.62: max observed was 59.6%, need headroom
 entry_minute_start = 7      # widened from 8: catch earlier momentum (min 7)
 entry_minute_end = 13       # widened from 12: allow late entries (min 13)
