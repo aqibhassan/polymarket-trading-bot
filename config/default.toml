@@ -135,6 +135,11 @@ confidence_adaptive_base = 0.85      # start adjusting above this confidence lev
 confidence_adaptive_scale = 0.50     # max_price += (confidence - base) * scale
 confidence_adaptive_cap = 0.92       # absolute ceiling on entry price
 
+# GTC confidence discount: disabled to improve fill rate on thin CLOB books.
+# When enabled, discounts GTC limit price below market — reduces fills on
+# desert markets where our order is already the only bid.
+use_confidence_discount = false
+
 # Use per-signal confidence in Kelly sizing (instead of static estimated_win_prob)
 use_signal_confidence_kelly = true
 kelly_confidence_floor = 0.80        # never use less than this in Kelly
