@@ -20,6 +20,7 @@ const REASON_LABELS: Record<string, string> = {
   clob_entry_price_too_high: 'CLOB price too high',
   max_clob_entry_price: 'Price exceeds max',
   no_clob_price: 'No CLOB price available',
+  no_real_price_available: 'No real CLOB price',
   gtc_pending: 'GTC order placed (unfilled)',
   fok_no_real_ask: 'FOK — no real ask to cross',
 };
@@ -45,8 +46,26 @@ function VoteSummary({ votes }: { votes: Record<string, number> }) {
 export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
   const [feed, setFeed] = useState<SignalActivityEvent[]>([]);
   const seenIds = useRef(new Set<string>());
+  const historyLoaded = useRef(false);
 
-  // Sync from SSE data
+  // Load historical data from ClickHouse on mount
+  useEffect(() => {
+    if (historyLoaded.current) return;
+    historyLoaded.current = true;
+
+    fetch('/api/signal-activity?limit=20')
+      .then((res) => res.json())
+      .then((data) => {
+        const events: SignalActivityEvent[] = data.events || [];
+        if (events.length > 0) {
+          for (const evt of events) seenIds.current.add(evt.id);
+          setFeed(events);
+        }
+      })
+      .catch(() => { /* ClickHouse unavailable — fall back to SSE only */ });
+  }, []);
+
+  // Merge real-time SSE data on top of historical
   useEffect(() => {
     if (!activity || activity.length === 0) return;
     let changed = false;
@@ -58,11 +77,17 @@ export function SignalActivityFeed({ activity }: SignalActivityFeedProps) {
     }
     if (changed) {
       const merged = new Map<string, SignalActivityEvent>();
+      // SSE events first (freshest)
       for (const evt of activity) merged.set(evt.id, evt);
+      // Then historical
       for (const evt of feed) {
         if (!merged.has(evt.id)) merged.set(evt.id, evt);
       }
-      setFeed(Array.from(merged.values()).slice(0, 20));
+      // Sort by timestamp descending, keep 20
+      const sorted = Array.from(merged.values())
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 20);
+      setFeed(sorted);
     }
   }, [activity]); // eslint-disable-line react-hooks/exhaustive-deps
 

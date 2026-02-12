@@ -255,6 +255,36 @@ export async function getAuditEvents(limit: number = 50): Promise<AuditEvent[]> 
   return result.json<AuditEvent>();
 }
 
+export async function getRecentSignalActivity(limit: number = 20): Promise<SignalActivityRow[]> {
+  const result = await clickhouse.query({
+    query: `
+      SELECT eval_id, timestamp, market_id, minute, outcome, reason,
+             direction, confidence, votes_yes, votes_no, votes_neutral, detail
+      FROM mvhe.signal_evaluations
+      ORDER BY timestamp DESC
+      LIMIT {limit:UInt32}
+    `,
+    query_params: { limit },
+    format: 'JSONEachRow',
+  });
+  return result.json<SignalActivityRow>();
+}
+
+export interface SignalActivityRow {
+  eval_id: string;
+  timestamp: string;
+  market_id: string;
+  minute: number;
+  outcome: string;
+  reason: string;
+  direction: string;
+  confidence: number;
+  votes_yes: number;
+  votes_no: number;
+  votes_neutral: number;
+  detail: string;
+}
+
 export async function getSkipMetrics(strategy: string, days: number = 7): Promise<SkipMetrics> {
   // Query 1: Summary + reasons breakdown
   const summaryResult = await clickhouse.query({
