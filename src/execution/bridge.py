@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.core.logging import get_logger
 
@@ -102,6 +102,7 @@ class ExecutionBridge:
         price: Decimal,
         size: Decimal,
         strategy_id: str = "",
+        max_price: Decimal | None = None,
     ) -> Order:
         # Minimum order size gate (Polymarket CLOB requires >= 5 tokens)
         if self._mode == "live" and size < POLYMARKET_MIN_ORDER_SIZE:
@@ -149,16 +150,22 @@ class ExecutionBridge:
 
         for attempt in range(attempts):
             try:
+                # Build kwargs — only pass max_price to backends that support it
+                _kwargs: dict[str, Any] = {}
+                if max_price is not None:
+                    _kwargs["max_price"] = max_price
                 if self._order_timeout > 0:
                     order = await asyncio.wait_for(
                         self._backend().submit_order(
                             market_id, token_id, side, order_type, price, size, strategy_id,
+                            **_kwargs,
                         ),
                         timeout=self._order_timeout,
                     )
                 else:
                     order = await self._backend().submit_order(
                         market_id, token_id, side, order_type, price, size, strategy_id,
+                        **_kwargs,
                     )
 
                 if self._circuit_breaker is not None:

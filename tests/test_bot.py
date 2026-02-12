@@ -577,123 +577,100 @@ class TestConfidenceDiscount:
 
 
 class TestSelectOrderType:
-    """Tests for dynamic GTC vs FOK order type selection."""
+    """Tests for GTC-first order type selection (FOK only for late minutes)."""
 
-    def test_illiquid_market_returns_gtc(self):
-        """Wide spread + no trades + early minute → GTC maker."""
-        result = BotOrchestrator._select_order_type(
-            clob_last_trade=None,
-            clob_spread=Decimal("0.98"),
-            minute_in_window=8,
-        )
+    def test_early_minute_always_gtc(self):
+        """Any minute before fok_late_minute → GTC regardless of spread/trades."""
         from src.models.order import OrderType
-        assert result == OrderType.GTC
-
-    def test_liquid_market_returns_fok(self):
-        """Tight spread + real trades → FOK taker."""
-        result = BotOrchestrator._select_order_type(
-            clob_last_trade=Decimal("0.65"),
-            clob_spread=Decimal("0.10"),
-            minute_in_window=9,
-        )
-        from src.models.order import OrderType
-        assert result == OrderType.FOK
+        for minute in range(0, 11):
+            result = BotOrchestrator._select_order_type(
+                clob_last_trade=Decimal("0.65"),
+                clob_spread=Decimal("0.05"),
+                minute_in_window=minute,
+            )
+            assert result == OrderType.GTC, f"minute {minute} should be GTC"
 
     def test_late_window_returns_fok(self):
         """Late window (min 11+) → always FOK regardless of spread."""
+        from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
             clob_spread=Decimal("0.50"),
             minute_in_window=12,
         )
-        from src.models.order import OrderType
         assert result == OrderType.FOK
 
     def test_late_window_threshold_exact(self):
         """Minute exactly at threshold → FOK."""
+        from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
             clob_spread=Decimal("0.98"),
             minute_in_window=11,
             fok_late_minute=11,
         )
-        from src.models.order import OrderType
         assert result == OrderType.FOK
-
-    def test_trades_but_wide_spread_returns_gtc(self):
-        """Real trades but spread still wide → GTC (not tight enough for FOK)."""
-        result = BotOrchestrator._select_order_type(
-            clob_last_trade=Decimal("0.50"),
-            clob_spread=Decimal("0.50"),
-            minute_in_window=9,
-            fok_spread_threshold=Decimal("0.30"),
-        )
-        from src.models.order import OrderType
-        assert result == OrderType.GTC
-
-    def test_custom_thresholds(self):
-        """Custom FOK thresholds are respected."""
-        result = BotOrchestrator._select_order_type(
-            clob_last_trade=Decimal("0.70"),
-            clob_spread=Decimal("0.15"),
-            minute_in_window=8,
-            fok_spread_threshold=Decimal("0.20"),
-            fok_late_minute=13,
-        )
-        from src.models.order import OrderType
-        assert result == OrderType.FOK
-
-    def test_no_trades_tight_spread_returns_gtc(self):
-        """Tight spread but no trades → GTC (need both conditions for FOK)."""
-        result = BotOrchestrator._select_order_type(
-            clob_last_trade=None,
-            clob_spread=Decimal("0.10"),
-            minute_in_window=8,
-        )
-        from src.models.order import OrderType
-        assert result == OrderType.GTC
-
-    def test_early_minute_wide_spread_returns_gtc(self):
-        """Before late threshold, wide spread → always GTC."""
-        result = BotOrchestrator._select_order_type(
-            clob_last_trade=None,
-            clob_spread=Decimal("0.98"),
-            minute_in_window=8,
-            fok_late_minute=11,
-        )
-        from src.models.order import OrderType
-        assert result == OrderType.GTC
-
-    def test_zero_spread_with_trades_returns_fok(self):
-        """Zero spread + real trades → FOK (best conditions)."""
-        result = BotOrchestrator._select_order_type(
-            clob_last_trade=Decimal("0.55"),
-            clob_spread=Decimal("0.00"),
-            minute_in_window=8,
-        )
-        from src.models.order import OrderType
-        assert result == OrderType.FOK
-
-    def test_spread_exactly_at_threshold_returns_gtc(self):
-        """Spread exactly at threshold → not tight enough → GTC."""
-        result = BotOrchestrator._select_order_type(
-            clob_last_trade=Decimal("0.60"),
-            clob_spread=Decimal("0.30"),
-            minute_in_window=9,
-            fok_spread_threshold=Decimal("0.30"),
-        )
-        from src.models.order import OrderType
-        assert result == OrderType.GTC
 
     def test_minute_before_late_threshold_returns_gtc(self):
-        """Minute just before late threshold → GTC (not late enough)."""
+        """Minute just before late threshold → GTC."""
+        from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
             clob_spread=Decimal("0.80"),
             minute_in_window=10,
             fok_late_minute=11,
         )
+        assert result == OrderType.GTC
+
+    def test_custom_fok_late_minute(self):
+        """Custom fok_late_minute threshold is respected."""
         from src.models.order import OrderType
+        # Before custom threshold → GTC
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.70"),
+            clob_spread=Decimal("0.05"),
+            minute_in_window=12,
+            fok_late_minute=13,
+        )
+        assert result == OrderType.GTC
+        # At custom threshold → FOK
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.70"),
+            clob_spread=Decimal("0.05"),
+            minute_in_window=13,
+            fok_late_minute=13,
+        )
+        assert result == OrderType.FOK
+
+    def test_liquid_market_early_still_gtc(self):
+        """Even tight spread + real trades → GTC before late threshold."""
+        from src.models.order import OrderType
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.55"),
+            clob_spread=Decimal("0.00"),
+            minute_in_window=8,
+        )
+        assert result == OrderType.GTC
+
+    def test_illiquid_market_late_still_fok(self):
+        """Desert book but late minute → FOK (last-chance crossing)."""
+        from src.models.order import OrderType
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=None,
+            clob_spread=Decimal("0.98"),
+            minute_in_window=11,
+        )
+        assert result == OrderType.FOK
+
+    def test_spread_params_ignored_for_early_minutes(self):
+        """Spread-based params don't affect outcome — only minute matters."""
+        from src.models.order import OrderType
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.60"),
+            clob_spread=Decimal("0.01"),
+            minute_in_window=9,
+            fok_spread_threshold=Decimal("0.50"),
+        )
         assert result == OrderType.GTC
 
 

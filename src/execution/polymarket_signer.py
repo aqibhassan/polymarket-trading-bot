@@ -180,6 +180,7 @@ class PolymarketLiveTrader:
         price: Decimal,
         size: Decimal,
         strategy_id: str = "",
+        max_price: Decimal | None = None,
     ) -> Order:
         """Sign and submit an order to the Polymarket CLOB.
 
@@ -249,7 +250,16 @@ class PolymarketLiveTrader:
                             rounded_price=rounded_price,
                             model_price=float(price),
                         )
-                rounded_price = min(rounded_price, 0.95)  # Safety cap
+                # Safety cap: honour caller's max_price, fall back to 0.95
+                safety_cap = float(max_price) if max_price is not None else 0.95
+                if rounded_price > safety_cap:
+                    logger.info(
+                        "buy_price_capped",
+                        original=rounded_price,
+                        capped_to=safety_cap,
+                        max_price=float(max_price) if max_price else None,
+                    )
+                rounded_price = min(rounded_price, safety_cap)
                 rounded_price = max(rounded_price, 0.01)  # Floor
             else:
                 rounded_price = math.floor(float(price) * 100) / 100

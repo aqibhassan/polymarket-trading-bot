@@ -286,20 +286,20 @@ class BotOrchestrator:
         fok_spread_threshold: Decimal = Decimal("0.30"),
         fok_late_minute: int = 11,
     ) -> "OrderType":
-        """Choose GTC (maker) or FOK (taker) based on CLOB state.
+        """Choose GTC (maker) or FOK (taker) based on minute in window.
 
-        FOK when:
-          - Real trades exist AND spread < threshold (liquid market)
-          - OR minute >= late threshold (last chance, cross the spread)
-        GTC otherwise (rest as maker when market is illiquid).
+        GTC-first strategy: place limit orders early when liquidity exists,
+        let them rest and fill. FOK only as a last-chance crossing in the
+        final minutes of the window.
+
+        GTC for minutes < fok_late_minute (default 11).
+        FOK for minutes >= fok_late_minute (last-chance taker crossing).
         """
         from src.models.order import OrderType
 
-        has_real_trades = clob_last_trade is not None
-        spread_tight = clob_spread < fok_spread_threshold
         late_window = minute_in_window >= fok_late_minute
 
-        if (has_real_trades and spread_tight) or late_window:
+        if late_window:
             return OrderType.FOK
         return OrderType.GTC
 
@@ -1694,6 +1694,7 @@ class BotOrchestrator:
                                             size=last_position_size
                                             or Decimal("0"),
                                             strategy_id=self._strategy.name,
+                                            max_price=_upgrade_fok_max,
                                         )
                                         if (
                                             _fok_order.status
@@ -2155,6 +2156,7 @@ class BotOrchestrator:
                                 price=entry_price,
                                 size=position_size,
                                 strategy_id=sig.strategy_id,
+                                max_price=_effective_max,
                             )
                             logger.info(
                                 "order_type_selected",
@@ -2165,12 +2167,44 @@ class BotOrchestrator:
                                 has_last_trade=clob_last_trade is not None,
                             )
                             if entry_order.status == OrderStatus.REJECTED:
-                                logger.warning(
-                                    "entry_order_rejected",
-                                    market_id=sig.market_id,
-                                    reason="order returned REJECTED status",
-                                )
-                                continue
+                                # FOK→GTC fallback: if FOK was rejected and we
+                                # still have time, retry as a GTC limit at the
+                                # model's entry_price (fair value rests in book).
+                                if (
+                                    order_type_selected == OrderType.FOK
+                                    and minute_in_window <= 13
+                                ):
+                                    logger.info(
+                                        "fok_rejected_gtc_fallback",
+                                        market_id=sig.market_id,
+                                        fok_price=str(entry_price),
+                                        minute=minute_in_window,
+                                    )
+                                    entry_order = await bridge.submit_order(
+                                        market_id=sig.market_id,
+                                        token_id=token_id,
+                                        side=OrderSide.BUY,
+                                        order_type=OrderType.GTC,
+                                        price=entry_price,
+                                        size=position_size,
+                                        strategy_id=sig.strategy_id,
+                                        max_price=effective_max_clob,
+                                    )
+                                    # Update selected type for downstream logging
+                                    order_type_selected = OrderType.GTC
+                                    if entry_order.status == OrderStatus.REJECTED:
+                                        logger.warning(
+                                            "fok_gtc_fallback_also_rejected",
+                                            market_id=sig.market_id,
+                                        )
+                                        continue
+                                else:
+                                    logger.warning(
+                                        "entry_order_rejected",
+                                        market_id=sig.market_id,
+                                        reason="order returned REJECTED status",
+                                    )
+                                    continue
 
                             # GTC SUBMITTED: order is resting in the book.
                             # Don't block — let the market come to us. Track

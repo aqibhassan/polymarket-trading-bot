@@ -61,6 +61,7 @@ class PaperTrader:
         price: Decimal,
         size: Decimal,
         strategy_id: str = "",
+        **kwargs: object,
     ) -> Order:
         order = Order(
             market_id=market_id,

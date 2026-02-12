@@ -402,3 +402,88 @@ class TestGTCPricing:
             size=Decimal("100"),
         )
         assert order.status == OrderStatus.SUBMITTED
+
+
+# ---------------------------------------------------------------------------
+# FOK price cap (max_price safety)
+# ---------------------------------------------------------------------------
+
+
+class TestFOKPriceCap:
+    """FOK BUY orders should be capped at max_price when provided."""
+
+    @pytest.mark.asyncio
+    async def test_fok_buy_capped_at_max_price(
+        self, trader: PolymarketLiveTrader, mock_clob: MagicMock,
+    ) -> None:
+        """FOK BUY with book at $0.92 should be capped at max_price $0.85."""
+        # Simulate best_ask = 0.92 via order book
+        ask_entry = MagicMock()
+        ask_entry.price = "0.92"
+        ask_entry.size = "100"
+        book_mock = MagicMock()
+        book_mock.asks = [ask_entry]
+        mock_clob.get_order_book.return_value = book_mock
+
+        order = await trader.submit_order(
+            market_id="m1",
+            token_id="t1",
+            side=OrderSide.BUY,
+            order_type=OrderType.FOK,
+            price=Decimal("0.50"),
+            size=Decimal("10"),
+            max_price=Decimal("0.85"),
+        )
+        # Verify order was submitted (not rejected by our logic)
+        assert order.status == OrderStatus.FILLED
+        # Check that actual fill price was capped
+        assert order.avg_fill_price is not None
+        assert order.avg_fill_price <= Decimal("0.85")
+
+    @pytest.mark.asyncio
+    async def test_fok_buy_no_max_price_uses_default_cap(
+        self, trader: PolymarketLiveTrader, mock_clob: MagicMock,
+    ) -> None:
+        """FOK BUY without max_price should use default 0.95 cap."""
+        ask_entry = MagicMock()
+        ask_entry.price = "0.97"
+        ask_entry.size = "100"
+        book_mock = MagicMock()
+        book_mock.asks = [ask_entry]
+        mock_clob.get_order_book.return_value = book_mock
+
+        order = await trader.submit_order(
+            market_id="m1",
+            token_id="t1",
+            side=OrderSide.BUY,
+            order_type=OrderType.FOK,
+            price=Decimal("0.50"),
+            size=Decimal("10"),
+        )
+        assert order.status == OrderStatus.FILLED
+        assert order.avg_fill_price is not None
+        assert order.avg_fill_price <= Decimal("0.95")
+
+    @pytest.mark.asyncio
+    async def test_fok_buy_below_max_price_unchanged(
+        self, trader: PolymarketLiveTrader, mock_clob: MagicMock,
+    ) -> None:
+        """FOK BUY at $0.60 with max_price $0.85 should keep $0.60."""
+        ask_entry = MagicMock()
+        ask_entry.price = "0.60"
+        ask_entry.size = "100"
+        book_mock = MagicMock()
+        book_mock.asks = [ask_entry]
+        mock_clob.get_order_book.return_value = book_mock
+
+        order = await trader.submit_order(
+            market_id="m1",
+            token_id="t1",
+            side=OrderSide.BUY,
+            order_type=OrderType.FOK,
+            price=Decimal("0.50"),
+            size=Decimal("10"),
+            max_price=Decimal("0.85"),
+        )
+        assert order.status == OrderStatus.FILLED
+        assert order.avg_fill_price == Decimal("0.60")
