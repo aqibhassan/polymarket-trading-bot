@@ -2332,8 +2332,10 @@ class BotOrchestrator:
                             logger.info(
                                 "swing_entry_executed",
                                 direction=sig.direction.value,
-                                price=str(entry_price),
-                                size=str(position_size),
+                                price=str(last_entry_price),
+                                size=str(last_position_size),
+                                model_price=str(entry_price),
+                                model_size=str(position_size),
                                 kelly=str(sizing.kelly_fraction),
                                 capped=sizing.capped_reason or "none",
                                 est_fee=str(costs.fee_cost),

@@ -299,11 +299,15 @@ class PolymarketLiveTrader:
             # orderID back, the order was filled. GTC orders sit in the book.
             is_fok = order_type in (OrderType.FOK,)
             fill_status = OrderStatus.FILLED if is_fok else OrderStatus.SUBMITTED
+            # Use actual submitted price/size (after book adjustment), not
+            # the model price/size the bot originally requested.
+            actual_fill_price = Decimal(str(rounded_price)) if is_fok else None
+            actual_fill_size = Decimal(str(rounded_size)) if is_fok else None
             order = order.model_copy(update={
                 "status": fill_status,
                 "exchange_order_id": str(exchange_id),
-                "filled_size": size if is_fok else None,
-                "avg_fill_price": price if is_fok else None,
+                "filled_size": actual_fill_size,
+                "avg_fill_price": actual_fill_price,
                 "updated_at": datetime.now(tz=UTC),
             })
             self._orders[oid] = order
@@ -311,6 +315,8 @@ class PolymarketLiveTrader:
             log_order_event(
                 event_name, oid,
                 exchange_order_id=str(exchange_id),
+                fill_price=str(rounded_price) if is_fok else None,
+                fill_size=str(rounded_size) if is_fok else None,
             )
 
         except Exception as exc:
