@@ -286,29 +286,30 @@ class BotOrchestrator:
         fok_spread_threshold: Decimal = Decimal("0.30"),
         fok_late_minute: int = 11,
         use_fak_taker: bool = True,
+        fak_only: bool = True,
     ) -> "OrderType":
-        """Choose GTC (maker) or FAK/FOK (taker) based on minute and spread.
+        """Choose order type for entry.
 
-        GTC-first strategy: place limit orders early when liquidity exists,
-        let them rest and fill. FAK/FOK only as a last-chance crossing in the
-        final minutes of the window.
+        When fak_only=True (default), always returns FAK. This eliminates
+        GTC adverse selection — GTC BUY fills are anti-correlated with bet
+        direction because the counterparty SELLING is informed.
 
-        Additionally, if real liquidity is detected mid-window (spread below
-        threshold AND minute >= 5), switch to FAK to cross immediately.
-
-        GTC for minutes < 5 (always passive early).
-        FAK/FOK for minutes >= fok_late_minute (last-chance taker crossing).
-        FAK for minutes 5-10 when spread < fok_spread_threshold (liquidity detected).
+        Legacy GTC-first mode (fak_only=False): place limit orders early,
+        FAK/FOK as last-chance crossing.
         """
         from src.models.order import OrderType
 
         taker_type = OrderType.FAK if use_fak_taker else OrderType.FOK
 
+        # FAK-only mode: always cross the spread ourselves
+        if fak_only:
+            return taker_type
+
+        # Legacy: GTC-first with late-window FAK
         late_window = minute_in_window >= fok_late_minute
         if late_window:
             return taker_type
 
-        # P6: Mid-window spread trigger — real liquidity appeared
         if minute_in_window >= 5 and clob_spread < fok_spread_threshold:
             return taker_type
 
@@ -534,8 +535,10 @@ class BotOrchestrator:
         from src.models.market import Candle, MarketState, OrderBookSnapshot, Side
         from src.models.order import OrderSide, OrderStatus, OrderType
         from src.models.signal import SignalType
+        from src.calibration import BayesianCalibrator, CalibrationTracker, EdgeCalculator
         from src.risk.cost_calculator import CostCalculator
         from src.risk.kill_switch import KillSwitch
+        from src.risk.live_validator import LiveValidator
         from src.risk.portfolio import Portfolio
         from src.risk.position_sizer import PositionSize, PositionSizer
         from src.risk.risk_manager import RiskManager
@@ -622,6 +625,14 @@ class BotOrchestrator:
             str(self._config.get("execution.pricing.max_clob_spread", 0.50))
         )
 
+        # Per-field CLOB freshness thresholds
+        clob_bid_ask_freshness = float(
+            self._config.get("execution.pricing.clob_bid_ask_freshness_seconds", 30)
+        )
+        clob_last_trade_freshness = float(
+            self._config.get("execution.pricing.clob_last_trade_freshness_seconds", 120)
+        )
+
         # FOK (Fill-Or-Kill) taker execution config
         fok_spread_threshold = Decimal(
             str(self._config.get("execution.pricing.fok_spread_threshold", 0.30))
@@ -631,6 +642,11 @@ class BotOrchestrator:
         )
         fok_max_entry_price = Decimal(
             str(self._config.get("execution.pricing.fok_max_entry_price", 0.85))
+        )
+
+        # FAK-only mode: always use FAK taker, eliminates GTC adverse selection
+        fak_only = bool(
+            self._config.get("execution.pricing.fak_only", True)
         )
 
         # FAK/GTD config
@@ -695,6 +711,78 @@ class BotOrchestrator:
         kelly_conf_cap = Decimal(
             str(self._config.get("execution.pricing.kelly_confidence_cap", 0.95))
         )
+
+        # --- Calibration config ---
+        calibration_enabled = bool(
+            self._config.get("calibration.enabled", False)
+        )
+        calibration_max_edge = float(
+            self._config.get("calibration.max_edge", 0.15)
+        )
+        calibration_min_edge = float(
+            self._config.get("calibration.min_edge", 0.03)
+        )
+        calibration_default_lr = float(
+            self._config.get("calibration.default_likelihood_ratio", 1.3)
+        )
+        calibration_min_samples = int(
+            self._config.get("calibration.min_samples_for_calibration", 30)
+        )
+        calibration_fee_constant = float(
+            self._config.get("calibration.fee_constant", 0.25)
+        )
+
+        # --- Validation config ---
+        validation_enabled = bool(
+            self._config.get("validation.enabled", False)
+        )
+        validation_min_trades = int(
+            self._config.get("validation.min_trades_for_check", 20)
+        )
+        validation_halt_wr = float(
+            self._config.get("validation.halt_win_rate", 0.45)
+        )
+        validation_halt_brier = float(
+            self._config.get("validation.halt_brier_score", 0.30)
+        )
+        validation_check_interval = int(
+            self._config.get("validation.check_interval_trades", 5)
+        )
+
+        # Initialize calibration components
+        calibrator: BayesianCalibrator | None = None
+        cal_tracker: CalibrationTracker | None = None
+        edge_calc: EdgeCalculator | None = None
+        live_validator: LiveValidator | None = None
+        if calibration_enabled:
+            calibrator = BayesianCalibrator(
+                max_edge=calibration_max_edge,
+                default_likelihood_ratio=calibration_default_lr,
+                min_samples=calibration_min_samples,
+            )
+            cal_tracker = CalibrationTracker()
+            edge_calc = EdgeCalculator(
+                min_edge=calibration_min_edge,
+                fee_constant=calibration_fee_constant,
+            )
+            logger.info(
+                "calibration_enabled",
+                max_edge=calibration_max_edge,
+                min_edge=calibration_min_edge,
+                default_lr=calibration_default_lr,
+            )
+        if validation_enabled:
+            live_validator = LiveValidator(
+                min_trades=validation_min_trades,
+                halt_win_rate=validation_halt_wr,
+                halt_brier_score=validation_halt_brier,
+                check_interval=validation_check_interval,
+            )
+            logger.info(
+                "validation_enabled",
+                min_trades=validation_min_trades,
+                halt_wr=validation_halt_wr,
+            )
 
         # --- Component setup ---
         kline_ws_url = os.environ.get(
@@ -957,7 +1045,9 @@ class BotOrchestrator:
             except Exception:
                 logger.debug("reactive_fak_sweep_failed", exc_info=True)
 
-        poly_ws_feed.register_liquidity_callback(_on_liquidity_detected)
+        # Only register reactive sweep callback in legacy GTC mode
+        if not fak_only:
+            poly_ws_feed.register_liquidity_callback(_on_liquidity_detected)
         ws_connected = True
         self._touch_sentinel(_WS_CONNECTED_FILE)
 
@@ -995,6 +1085,7 @@ class BotOrchestrator:
         last_position_size: Decimal | None = None
         start_time = datetime.now(tz=UTC)
         last_confidence: float = 0.0
+        last_cal_pred_id: str | None = None  # calibration tracker prediction ID
         last_entry_minute: int = 0
         last_cum_return_entry: float = 0.0
         last_fee_cost = Decimal("0")
@@ -1093,7 +1184,8 @@ class BotOrchestrator:
                 # --- Window boundary transition ---
                 if current_window_start is not None and w_start != current_window_start:
                     # Check if pending GTC was filled before recording PnL
-                    if pending_gtc_oid and bridge.mode == "live" and bridge._live_trader:
+                    # (only relevant in legacy GTC mode, skipped when fak_only)
+                    if not fak_only and pending_gtc_oid and bridge.mode == "live" and bridge._live_trader:
                         try:
                             resp = bridge._live_trader._clob_client.get_order(pending_gtc_oid)
                             gtc_status = resp.get("status", "") if isinstance(resp, dict) else ""
@@ -1272,6 +1364,37 @@ class BotOrchestrator:
                         else:
                             loss_count += 1
                         await kill_switch.async_record_trade_result(is_win=is_win_wb)
+
+                        # --- Calibration & validation recording ---
+                        if cal_tracker and last_cal_pred_id:
+                            cal_tracker.record_outcome(last_cal_pred_id, won=is_win_wb)
+                            last_cal_pred_id = None
+                        if live_validator:
+                            live_validator.record_outcome(
+                                trade_id=f"wb-{current_window_start}",
+                                predicted_prob=last_confidence,
+                                won=is_win_wb,
+                                entry_price=float(last_entry_price),
+                                pnl=float(pnl_wb),
+                            )
+                            val_result = live_validator.should_halt()
+                            if val_result.should_halt:
+                                logger.warning(
+                                    "validation_halt_triggered",
+                                    reason=val_result.reason,
+                                    trades=val_result.trade_count,
+                                )
+                                # Publish halt state to Redis
+                                try:
+                                    await cache.set("bot:validation_halt", {
+                                        "halted": True,
+                                        "reason": val_result.reason,
+                                        "trades": val_result.trade_count,
+                                        "timestamp": datetime.now(tz=UTC).isoformat(),
+                                    }, ttl=3600)
+                                except Exception:
+                                    pass
+
                         trade_id_wb = ""
                         if ch_store is not None:
                             trade_id_wb = await self._record_completed_trade(
@@ -1648,31 +1771,48 @@ class BotOrchestrator:
                     )
 
                 # --- Read CLOB state from Polymarket WS ---
+                # Per-field freshness: bid/ask must be very fresh (30s default),
+                # last_trade can be slightly older (120s default).
+                # This prevents trading on stale prices when the WS goes quiet.
                 clob_best_ask: Decimal | None = None
                 clob_best_bid: Decimal | None = None
                 clob_midpoint: Decimal | None = None
                 clob_last_trade: Decimal | None = None
+                _now_clob = datetime.now(tz=UTC)
                 if use_clob_pricing and yes_token_id:
                     clob_state = poly_ws_feed.get_clob_state(yes_token_id)
-                    # Only use CLOB data if fresh (< 960s old).
-                    # Must cover the full 15-min window (900s) + startup buffer.
-                    # On desert markets the WS sends one book snapshot on subscribe
-                    # then goes silent; data from REST prime must persist throughout.
-                    # State is cleared on unsubscribe between windows, so no risk
-                    # of cross-window contamination.
-                    clob_fresh = (
-                        clob_state is not None
-                        and clob_state.best_ask is not None
-                        and clob_state.last_updated is not None
-                        and (datetime.now(tz=UTC) - clob_state.last_updated).total_seconds() < 960
-                    )
-                    if clob_fresh:
-                        assert clob_state is not None  # for type narrowing
-                        clob_best_ask = clob_state.best_ask
-                        clob_best_bid = clob_state.best_bid
-                        clob_midpoint = clob_state.midpoint
-                        clob_last_trade = clob_state.last_trade_price
-                    elif orderbook.asks:
+
+                    if clob_state is not None:
+                        # Per-field freshness checks
+                        _bid_ask_age = (
+                            (_now_clob - clob_state.bid_ask_updated).total_seconds()
+                            if clob_state.bid_ask_updated is not None
+                            else float("inf")
+                        )
+                        _trade_age = (
+                            (_now_clob - clob_state.last_trade_updated).total_seconds()
+                            if clob_state.last_trade_updated is not None
+                            else float("inf")
+                        )
+
+                        if _bid_ask_age < clob_bid_ask_freshness:
+                            clob_best_ask = clob_state.best_ask
+                            clob_best_bid = clob_state.best_bid
+                            # Only derive midpoint from fresh bid/ask
+                            if clob_best_bid is not None and clob_best_ask is not None:
+                                clob_midpoint = (clob_best_bid + clob_best_ask) / 2
+                        else:
+                            if _bid_ask_age < float("inf"):
+                                logger.debug(
+                                    "stale_bid_ask_rejected",
+                                    age_s=round(_bid_ask_age, 1),
+                                    max_s=clob_bid_ask_freshness,
+                                )
+
+                        if _trade_age < clob_last_trade_freshness:
+                            clob_last_trade = clob_state.last_trade_price
+
+                    if clob_best_ask is None and orderbook.asks:
                         # Fallback: use REST orderbook best ask
                         clob_best_ask = orderbook.asks[0].price
                         clob_best_bid = orderbook.bids[0].price if orderbook.bids else None
@@ -1684,18 +1824,26 @@ class BotOrchestrator:
                 no_clob_last_trade: Decimal | None = None
                 if use_clob_pricing and no_token_id:
                     no_clob_state = poly_ws_feed.get_clob_state(no_token_id)
-                    no_clob_fresh = (
-                        no_clob_state is not None
-                        and no_clob_state.best_ask is not None
-                        and no_clob_state.last_updated is not None
-                        and (datetime.now(tz=UTC) - no_clob_state.last_updated).total_seconds() < 960
-                    )
-                    if no_clob_fresh:
-                        assert no_clob_state is not None
-                        no_clob_best_ask = no_clob_state.best_ask
-                        no_clob_best_bid = no_clob_state.best_bid
-                        no_clob_midpoint = no_clob_state.midpoint
-                        no_clob_last_trade = no_clob_state.last_trade_price
+                    if no_clob_state is not None:
+                        _no_ba_age = (
+                            (_now_clob - no_clob_state.bid_ask_updated).total_seconds()
+                            if no_clob_state.bid_ask_updated is not None
+                            else float("inf")
+                        )
+                        _no_trade_age = (
+                            (_now_clob - no_clob_state.last_trade_updated).total_seconds()
+                            if no_clob_state.last_trade_updated is not None
+                            else float("inf")
+                        )
+
+                        if _no_ba_age < clob_bid_ask_freshness:
+                            no_clob_best_ask = no_clob_state.best_ask
+                            no_clob_best_bid = no_clob_state.best_bid
+                            if no_clob_best_bid is not None and no_clob_best_ask is not None:
+                                no_clob_midpoint = (no_clob_best_bid + no_clob_best_ask) / 2
+
+                        if _no_trade_age < clob_last_trade_freshness:
+                            no_clob_last_trade = no_clob_state.last_trade_price
 
                 # Log CLOB vs sigmoid comparison every tick
                 if clob_best_ask is not None:
@@ -1745,11 +1893,12 @@ class BotOrchestrator:
                         logger.debug("clob_snapshot_insert_failed", exc_info=True)
 
                 # --- Mid-tick GTC fill check (every 3rd tick ≈ 15s) ---
-                # Detect fills, cancellations, or upgrade GTC→FOK when
-                # liquidity appears mid-window.
+                # Only active in legacy GTC mode. In FAK-only mode, there are
+                # no resting orders to poll, so skip entirely.
                 gtc_poll_counter += 1
                 if (
-                    pending_gtc_oid
+                    not fak_only
+                    and pending_gtc_oid
                     and bridge.mode == "live"
                     and bridge._live_trader
                     and gtc_poll_counter % 3 == 0
@@ -1837,6 +1986,7 @@ class BotOrchestrator:
                                 fok_spread_threshold=fok_spread_threshold,
                                 fok_late_minute=fok_late_minute,
                                 use_fak_taker=use_fak_taker,
+                                fak_only=fak_only,
                             )
                             _taker_type = OrderType.FAK if use_fak_taker else OrderType.FOK
                             if _new_type == _taker_type:
@@ -2036,6 +2186,14 @@ class BotOrchestrator:
                 except Exception:
                     logger.debug("signal_activity_accumulate_failed", exc_info=True)
 
+                # Check validation halt before processing signals
+                if live_validator and live_validator.is_halted:
+                    logger.debug(
+                        "validation_halted_skip_signals",
+                        reason=live_validator.halt_reason,
+                    )
+                    continue  # Skip to next tick — bot is halted
+
                 for sig in signals:
                     if sig.signal_type == SignalType.ENTRY and not has_open_position and not pending_gtc_position:
                         sigmoid_price = sig.entry_price or yes_price
@@ -2049,7 +2207,7 @@ class BotOrchestrator:
                         else:
                             clob_spread = Decimal("1")
 
-                        # Select order type: GTC (maker) or FOK (taker)
+                        # Select order type: FAK (fak_only=True) or legacy GTC/FAK
                         order_type_selected = (
                             self._select_order_type(
                                 clob_last_trade=clob_last_trade,
@@ -2058,6 +2216,7 @@ class BotOrchestrator:
                                 fok_spread_threshold=fok_spread_threshold,
                                 fok_late_minute=fok_late_minute,
                                 use_fak_taker=use_fak_taker,
+                                fak_only=fak_only,
                             )
                             if bridge.mode == "live"
                             else OrderType.LIMIT
@@ -2260,22 +2419,74 @@ class BotOrchestrator:
                                 capped_reason="fixed_bet",
                             )
                         else:
-                            # Per-signal confidence Kelly: use signal confidence
-                            # instead of static estimated_win_prob when it's higher.
-                            if use_signal_kelly and _sig_conf > float(estimated_win_prob):
-                                effective_win_prob = min(
-                                    max(Decimal(str(_sig_conf)), kelly_conf_floor),
-                                    kelly_conf_cap,
+                            # --- Calibrated win probability ---
+                            # When calibration is enabled, use Bayesian posterior
+                            # (CLOB prior + signal LR) instead of static win prob.
+                            # Edge gating rejects trades with insufficient edge.
+                            if calibration_enabled and calibrator and edge_calc:
+                                # Determine CLOB mid for calibration
+                                if sig.direction == Side.YES:
+                                    _cal_mid = float(clob_midpoint) if clob_midpoint else 0.50
+                                else:
+                                    _cal_mid = float(Decimal("1") - clob_midpoint) if clob_midpoint else 0.50
+
+                                cal_result = calibrator.calibrate(
+                                    clob_mid=_cal_mid,
+                                    signal_confidence=_sig_conf,
+                                    direction=sig.direction.value,
+                                    minute=minute_in_window,
+                                    tracker=cal_tracker,
                                 )
-                            else:
-                                effective_win_prob = estimated_win_prob
-                            if effective_win_prob != estimated_win_prob:
+                                edge_result = edge_calc.calculate(
+                                    posterior=cal_result.posterior,
+                                    entry_price=float(entry_price),
+                                    clob_mid=_cal_mid,
+                                )
+                                if not edge_result.is_tradeable:
+                                    logger.info(
+                                        "calibration_skip_no_edge",
+                                        posterior=round(cal_result.posterior, 4),
+                                        entry_price=str(entry_price),
+                                        fee_adjusted_edge=round(edge_result.fee_adjusted_edge, 4),
+                                        min_edge=edge_result.min_edge,
+                                        clob_mid=round(_cal_mid, 4),
+                                    )
+                                    continue
+                                effective_win_prob = Decimal(str(round(cal_result.posterior, 4)))
                                 logger.info(
-                                    "signal_confidence_kelly",
+                                    "calibrated_win_prob",
+                                    prior=round(cal_result.prior, 4),
+                                    posterior=round(cal_result.posterior, 4),
+                                    edge=round(edge_result.fee_adjusted_edge, 4),
+                                    capped=cal_result.capped,
                                     static_prob=str(estimated_win_prob),
-                                    effective_prob=str(effective_win_prob),
-                                    signal_confidence=round(_sig_conf, 4),
                                 )
+                                # Record prediction for tracker
+                                if cal_tracker:
+                                    import uuid as _cal_uuid
+                                    last_cal_pred_id = f"pred-{_cal_uuid.uuid4().hex[:8]}"
+                                    cal_tracker.record_prediction(
+                                        confidence=_sig_conf,
+                                        direction=sig.direction.value,
+                                        clob_mid=_cal_mid,
+                                        trade_id=last_cal_pred_id,
+                                    )
+                            else:
+                                # Legacy: per-signal confidence Kelly
+                                if use_signal_kelly and _sig_conf > float(estimated_win_prob):
+                                    effective_win_prob = min(
+                                        max(Decimal(str(_sig_conf)), kelly_conf_floor),
+                                        kelly_conf_cap,
+                                    )
+                                else:
+                                    effective_win_prob = estimated_win_prob
+                                if effective_win_prob != estimated_win_prob:
+                                    logger.info(
+                                        "signal_confidence_kelly",
+                                        static_prob=str(estimated_win_prob),
+                                        effective_prob=str(effective_win_prob),
+                                        signal_confidence=round(_sig_conf, 4),
+                                    )
                             sizing = position_sizer.calculate_binary(
                                 balance=cached_balance,
                                 entry_price=entry_price,
@@ -2307,11 +2518,12 @@ class BotOrchestrator:
                         )
 
                         # Confidence-based limit price: discount entry to improve R:R.
-                        # Only applies to GTC maker orders — FOK crosses the spread
-                        # immediately so discounting makes no sense.
+                        # Only applies to legacy GTC maker orders — FAK crosses the
+                        # spread immediately so discounting makes no sense.
                         original_entry_price = entry_price
                         if (
-                            use_confidence_discount
+                            not fak_only
+                            and use_confidence_discount
                             and self._mode == "live"
                             and signal_conf > 0
                             and order_type_selected == OrderType.GTC
@@ -2336,7 +2548,8 @@ class BotOrchestrator:
                         # P2: Time-escalating price ladder — add offset for GTC orders
                         # to improve fill probability as window ages. Not applied to
                         # FAK/FOK taker orders (they cross the spread already).
-                        if order_type_selected not in (OrderType.FAK, OrderType.FOK):
+                        # Disabled entirely in FAK-only mode.
+                        if not fak_only and order_type_selected not in (OrderType.FAK, OrderType.FOK):
                             ladder_offset = self._get_price_ladder_offset(
                                 minute_in_window, pricing_config,
                             )
@@ -2429,12 +2642,13 @@ class BotOrchestrator:
                             )
                             live_mode = bridge.mode == "live"
 
-                            # P5: GTD auto-expiry — if placing a GTC and GTD is enabled,
-                            # convert to GTD with expiration = window_end - buffer.
+                            # P5: GTD auto-expiry — only for legacy GTC mode.
+                            # FAK-only mode uses immediate fills, no expiry needed.
                             _order_expiration: int | None = None
                             _actual_order_type = order_type_selected
                             if (
-                                use_gtd_expiry
+                                not fak_only
+                                and use_gtd_expiry
                                 and order_type_selected == OrderType.GTC
                                 and current_window_start is not None
                                 and live_mode
@@ -2472,11 +2686,11 @@ class BotOrchestrator:
                                 has_last_trade=clob_last_trade is not None,
                             )
                             if entry_order.status == OrderStatus.REJECTED:
-                                # FOK→GTC fallback: if FOK was rejected and we
-                                # still have time, retry as a GTC limit at the
-                                # model's entry_price (fair value rests in book).
+                                # FAK→GTC fallback: only in legacy GTC mode.
+                                # In FAK-only mode, rejection means no liquidity — skip.
                                 if (
-                                    order_type_selected in (OrderType.FAK, OrderType.FOK)
+                                    not fak_only
+                                    and order_type_selected in (OrderType.FAK, OrderType.FOK)
                                     and minute_in_window <= 13
                                 ):
                                     logger.info(
@@ -2519,10 +2733,17 @@ class BotOrchestrator:
                                     continue
 
                             # GTC SUBMITTED: order is resting in the book.
-                            # Don't block — let the market come to us. Track
-                            # the pending order; we'll check fill status on
-                            # subsequent ticks and at window boundary.
-                            if live_mode and entry_order.status == OrderStatus.SUBMITTED:
+                            # Only relevant in legacy GTC mode. In FAK-only mode,
+                            # FAK orders are immediate (FILLED/PARTIALLY_FILLED/REJECTED),
+                            # so SUBMITTED should not occur — skip if it does.
+                            if fak_only and entry_order.status == OrderStatus.SUBMITTED:
+                                logger.warning(
+                                    "fak_unexpected_submitted",
+                                    market_id=sig.market_id,
+                                    exchange_oid=entry_order.exchange_order_id,
+                                )
+                                continue
+                            if not fak_only and live_mode and entry_order.status == OrderStatus.SUBMITTED:
                                 pending_gtc_oid = entry_order.exchange_order_id
                                 pending_gtc_internal_id = str(entry_order.id)
                                 pending_gtc_price = entry_price  # Track for ladder repost
@@ -2895,6 +3116,20 @@ class BotOrchestrator:
                         else:
                             loss_count += 1
                         await kill_switch.async_record_trade_result(is_win=is_win_ex)
+
+                        # --- Calibration & validation recording (early exit) ---
+                        if cal_tracker and last_cal_pred_id:
+                            cal_tracker.record_outcome(last_cal_pred_id, won=is_win_ex)
+                            last_cal_pred_id = None
+                        if live_validator:
+                            live_validator.record_outcome(
+                                trade_id=f"ex-{current_window_start}",
+                                predicted_prob=last_confidence,
+                                won=is_win_ex,
+                                entry_price=float(last_entry_price or 0),
+                                pnl=float(pnl_ex),
+                            )
+
                         exit_reason_str = str(sig.exit_reason) if sig.exit_reason else "signal_exit"
                         trade_id_ex = ""
                         if ch_store is not None:

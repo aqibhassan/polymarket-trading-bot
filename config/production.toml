@@ -27,8 +27,19 @@ circuit_breaker_max_failures = 3
 circuit_breaker_cooldown_seconds = 120
 
 [execution.pricing]
+fak_only = true
 use_confidence_discount = false  # Disabled: reduces fill rate on thin CLOB books
 min_discount_pct = 0.005
 max_discount_pct = 0.05
 use_clob_pricing = true
 max_clob_entry_price = 0.80
+
+[calibration]
+enabled = true
+min_edge = 0.03
+max_edge = 0.15
+
+[validation]
+enabled = true
+min_trades_for_check = 20
+halt_win_rate = 0.45

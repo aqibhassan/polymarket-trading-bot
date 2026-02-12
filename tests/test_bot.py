@@ -577,59 +577,102 @@ class TestConfidenceDiscount:
 
 
 class TestSelectOrderType:
-    """Tests for GTC-first order type selection (FOK only for late minutes)."""
+    """Tests for order type selection — FAK-only mode + legacy GTC mode."""
+
+    # --- FAK-only mode (default) ---
+
+    def test_fak_only_always_returns_fak(self):
+        """fak_only=True → always FAK regardless of minute or spread."""
+        from src.models.order import OrderType
+        for minute in range(0, 15):
+            result = BotOrchestrator._select_order_type(
+                clob_last_trade=Decimal("0.65"),
+                clob_spread=Decimal("0.50"),
+                minute_in_window=minute,
+                fak_only=True,
+            )
+            assert result == OrderType.FAK, f"minute {minute} fak_only should be FAK"
+
+    def test_fak_only_default_is_true(self):
+        """Default fak_only parameter should be True."""
+        from src.models.order import OrderType
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.65"),
+            clob_spread=Decimal("0.50"),
+            minute_in_window=3,
+        )
+        assert result == OrderType.FAK
+
+    def test_fak_only_with_fak_disabled_returns_fok(self):
+        """fak_only + use_fak_taker=False → FOK."""
+        from src.models.order import OrderType
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.65"),
+            clob_spread=Decimal("0.50"),
+            minute_in_window=3,
+            fak_only=True,
+            use_fak_taker=False,
+        )
+        assert result == OrderType.FOK
+
+    # --- Legacy GTC mode (fak_only=False) ---
 
     def test_early_minute_wide_spread_always_gtc(self):
-        """Minutes 0-4 with wide spread → always GTC (passive early)."""
+        """Legacy mode: Minutes 0-4 with wide spread → always GTC."""
         from src.models.order import OrderType
         for minute in range(0, 5):
             result = BotOrchestrator._select_order_type(
                 clob_last_trade=Decimal("0.65"),
                 clob_spread=Decimal("0.50"),
                 minute_in_window=minute,
+                fak_only=False,
             )
             assert result == OrderType.GTC, f"minute {minute} should be GTC"
 
     def test_early_minute_narrow_spread_still_gtc(self):
-        """Minutes 0-4 with narrow spread → still GTC (always passive early)."""
+        """Legacy mode: Minutes 0-4 with narrow spread → still GTC."""
         from src.models.order import OrderType
         for minute in range(0, 5):
             result = BotOrchestrator._select_order_type(
                 clob_last_trade=Decimal("0.65"),
                 clob_spread=Decimal("0.05"),
                 minute_in_window=minute,
+                fak_only=False,
             )
             assert result == OrderType.GTC, f"minute {minute} should be GTC"
 
     def test_mid_window_narrow_spread_returns_fak(self):
-        """Minutes 5-10 with narrow spread → FAK (liquidity detected)."""
+        """Legacy mode: Minutes 5-10 with narrow spread → FAK."""
         from src.models.order import OrderType
         for minute in range(5, 11):
             result = BotOrchestrator._select_order_type(
                 clob_last_trade=Decimal("0.65"),
                 clob_spread=Decimal("0.05"),
                 minute_in_window=minute,
+                fak_only=False,
             )
             assert result == OrderType.FAK, f"minute {minute} narrow spread should be FAK"
 
     def test_mid_window_wide_spread_returns_gtc(self):
-        """Minutes 5-10 with wide spread → GTC (no real liquidity)."""
+        """Legacy mode: Minutes 5-10 with wide spread → GTC."""
         from src.models.order import OrderType
         for minute in range(5, 11):
             result = BotOrchestrator._select_order_type(
                 clob_last_trade=Decimal("0.65"),
                 clob_spread=Decimal("0.50"),
                 minute_in_window=minute,
+                fak_only=False,
             )
             assert result == OrderType.GTC, f"minute {minute} wide spread should be GTC"
 
     def test_late_window_returns_fak(self):
-        """Late window (min 11+) → always FAK (default use_fak_taker=True)."""
+        """Late window (min 11+) → always FAK."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
             clob_spread=Decimal("0.50"),
             minute_in_window=12,
+            fak_only=False,
         )
         assert result == OrderType.FAK
 
@@ -641,6 +684,7 @@ class TestSelectOrderType:
             clob_spread=Decimal("0.50"),
             minute_in_window=12,
             use_fak_taker=False,
+            fak_only=False,
         )
         assert result == OrderType.FOK
 
@@ -652,22 +696,24 @@ class TestSelectOrderType:
             clob_spread=Decimal("0.98"),
             minute_in_window=11,
             fok_late_minute=11,
+            fak_only=False,
         )
         assert result == OrderType.FAK
 
     def test_minute_before_late_threshold_wide_spread_returns_gtc(self):
-        """Minute just before late threshold with wide spread → GTC."""
+        """Legacy mode: Minute before late threshold with wide spread → GTC."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
             clob_spread=Decimal("0.80"),
             minute_in_window=10,
             fok_late_minute=11,
+            fak_only=False,
         )
         assert result == OrderType.GTC
 
     def test_custom_fok_late_minute(self):
-        """Custom fok_late_minute threshold is respected."""
+        """Legacy mode: Custom fok_late_minute threshold is respected."""
         from src.models.order import OrderType
         # Before custom threshold, wide spread → GTC
         result = BotOrchestrator._select_order_type(
@@ -675,6 +721,7 @@ class TestSelectOrderType:
             clob_spread=Decimal("0.50"),
             minute_in_window=12,
             fok_late_minute=13,
+            fak_only=False,
         )
         assert result == OrderType.GTC
         # At custom threshold → FAK
@@ -683,48 +730,53 @@ class TestSelectOrderType:
             clob_spread=Decimal("0.50"),
             minute_in_window=13,
             fok_late_minute=13,
+            fak_only=False,
         )
         assert result == OrderType.FAK
 
     def test_liquid_market_early_still_gtc(self):
-        """Even tight spread + real trades → GTC before minute 5."""
+        """Legacy mode: Even tight spread + real trades → GTC before minute 5."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=Decimal("0.55"),
             clob_spread=Decimal("0.00"),
             minute_in_window=4,
+            fak_only=False,
         )
         assert result == OrderType.GTC
 
     def test_illiquid_market_late_still_fak(self):
-        """Desert book but late minute → FAK (last-chance crossing)."""
+        """Desert book but late minute → FAK."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=None,
             clob_spread=Decimal("0.98"),
             minute_in_window=11,
+            fak_only=False,
         )
         assert result == OrderType.FAK
 
     def test_spread_trigger_mid_window(self):
-        """Narrow spread at minute 9 with threshold 0.50 → FAK (liquidity detected)."""
+        """Legacy mode: Narrow spread at minute 9 → FAK."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=Decimal("0.60"),
             clob_spread=Decimal("0.01"),
             minute_in_window=9,
             fok_spread_threshold=Decimal("0.50"),
+            fak_only=False,
         )
         assert result == OrderType.FAK
 
     def test_wide_spread_mid_window_stays_gtc(self):
-        """Wide spread at minute 9 → GTC (no real liquidity)."""
+        """Legacy mode: Wide spread at minute 9 → GTC."""
         from src.models.order import OrderType
         result = BotOrchestrator._select_order_type(
             clob_last_trade=Decimal("0.60"),
             clob_spread=Decimal("0.60"),
             minute_in_window=9,
             fok_spread_threshold=Decimal("0.50"),
+            fak_only=False,
         )
         assert result == OrderType.GTC
 

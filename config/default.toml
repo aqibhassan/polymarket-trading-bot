@@ -132,6 +132,17 @@ use_clob_pricing = true
 max_clob_entry_price = 0.65
 max_clob_spread = 0.50
 
+# Per-field CLOB freshness thresholds (seconds)
+# bid/ask from WS book snapshots or price_change events — goes stale fast
+clob_bid_ask_freshness_seconds = 30
+# last_trade from WS trade events — less frequent but still useful
+clob_last_trade_freshness_seconds = 120
+
+# FAK-only mode: always use Fill-And-Kill taker orders.
+# Eliminates GTC adverse selection — we decide when to enter, not counterparties.
+# 2% taker fee is tiny vs adverse selection losses ($3-10/trade).
+fak_only = true
+
 # FOK (Fill-Or-Kill) taker execution: cross spread when liquidity appears
 fok_spread_threshold = 0.30      # Spread < 30% → eligible for FOK taker
 fok_late_minute_threshold = 11   # After minute 11, always attempt FOK
@@ -155,7 +166,8 @@ kelly_confidence_cap = 0.95          # never use more than this in Kelly
 
 # Time-escalating price ladder: passive early, aggressive late
 # Offset added to entry price based on minute in window
-price_ladder_enabled = true
+# Disabled: FAK-only mode doesn't use GTC resting orders
+price_ladder_enabled = false
 price_ladder_offset_min2 = 0.00    # minutes 2-4: post at last_trade (no offset)
 price_ladder_offset_min5 = 0.03    # minutes 5-7: +3 cents aggressive
 price_ladder_offset_min8 = 0.07    # minutes 8-9: +7 cents moderately aggressive
@@ -171,8 +183,26 @@ use_gtd_expiry = true
 gtd_expiry_buffer_seconds = 60     # expire 60s before window settlement
 
 # Reactive FAK sweep: when WS detects counterparty, fire FAK immediately
-reactive_sweep_enabled = true
+# Disabled: FAK-only mode doesn't use GTC resting orders to sweep from
+reactive_sweep_enabled = false
 reactive_sweep_max_price = 0.65    # never sweep above this price
+
+[calibration]
+# Bayesian signal calibration: use CLOB mid as prior, model confidence as likelihood
+enabled = true
+max_edge = 0.15            # posterior never exceeds clob_mid + max_edge
+min_edge = 0.03            # minimum fee-adjusted edge to trade (3 cents)
+default_likelihood_ratio = 1.3  # used when insufficient calibration data
+min_samples_for_calibration = 30  # need N outcomes before using empirical LR
+fee_constant = 0.25        # Polymarket dynamic fee constant
+
+[validation]
+# Live performance validation — auto-halt on degraded metrics
+enabled = true
+min_trades_for_check = 20  # start validating after N filled trades
+halt_win_rate = 0.45       # halt if WR drops below this
+halt_brier_score = 0.30    # halt if Brier score exceeds this
+check_interval_trades = 5  # re-check every N trades
 
 [bot]
 tick_interval_seconds = 5

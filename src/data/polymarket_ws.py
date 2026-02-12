@@ -31,6 +31,10 @@ class CLOBState:
     midpoint: Decimal | None = None
     last_trade_price: Decimal | None = None
     last_updated: datetime | None = None
+    # Per-field timestamps for granular freshness checks
+    bid_ask_updated: datetime | None = None
+    last_trade_updated: datetime | None = None
+    midpoint_updated: datetime | None = None
 
 
 class PolymarketWSFeed:
@@ -101,6 +105,7 @@ class PolymarketWSFeed:
                 _parsed = Decimal(str(_val))
                 if _parsed > 0:
                     state.last_trade_price = _parsed
+                    state.last_trade_updated = now
                     log.info("seed_rest_last_trade", token=token_id[:16], price=str(_parsed))
             except (ValueError, TypeError, ArithmeticError):
                 pass
@@ -114,6 +119,7 @@ class PolymarketWSFeed:
                 _parsed = Decimal(str(_val))
                 if _parsed > 0:
                     state.midpoint = _parsed
+                    state.midpoint_updated = now
                     log.info("seed_rest_midpoint", token=token_id[:16], mid=str(_parsed))
             except (ValueError, TypeError, ArithmeticError):
                 pass
@@ -128,6 +134,7 @@ class PolymarketWSFeed:
                 if _sp >= 0:
                     state.best_bid = state.midpoint - _sp / 2
                     state.best_ask = state.midpoint + _sp / 2
+                    state.bid_ask_updated = now
             except (ValueError, TypeError, ArithmeticError):
                 pass
 
@@ -299,7 +306,10 @@ class PolymarketWSFeed:
         state = self._clob_state.setdefault(asset_id, CLOBState())
         state.best_bid = best_bid
         state.best_ask = best_ask
+        state.bid_ask_updated = now
         state.midpoint = midpoint
+        if midpoint is not None:
+            state.midpoint_updated = now
         state.last_updated = now
 
         # Also emit orderbook if callback is set
@@ -411,7 +421,9 @@ class PolymarketWSFeed:
 
         if state.best_bid is not None and state.best_ask is not None:
             state.midpoint = (state.best_bid + state.best_ask) / 2
+            state.midpoint_updated = now
 
+        state.bid_ask_updated = now
         state.last_updated = now
 
         # Liquidity detection — invoke callbacks for real (non-placeholder) prices
@@ -428,6 +440,7 @@ class PolymarketWSFeed:
         price_str = data.get("price")
         if price_str is not None:
             state.last_trade_price = Decimal(str(price_str))
+            state.last_trade_updated = now
         state.last_updated = now
 
     # -- Placeholder thresholds for liquidity detection --
