@@ -2,7 +2,7 @@
 # Loaded on top of default.toml when --env production is specified.
 
 [risk]
-max_position_pct = 0.05              # 5% — $5/trade at $100 balance (Polymarket min: 5 tokens)
+max_position_pct = 0.10              # 10% — ensures positions clear 5-token min after confidence scaling
 min_position_pct = 0.03              # 3% floor ensures >5 tokens at $100 balance
 max_daily_drawdown_pct = 0.15        # 15% kill switch — allows ~3 losses at $100 balance
 min_starting_balance = 10             # Minimum 10 USDC to start live trading
@@ -27,8 +27,8 @@ circuit_breaker_max_failures = 3
 circuit_breaker_cooldown_seconds = 120
 
 [execution.pricing]
-use_confidence_discount = true
-min_discount_pct = 0.005   # 0.5% for very high confidence (0.95+)
-max_discount_pct = 0.05    # 5% for threshold confidence (~0.50)
+use_confidence_discount = false  # Disabled: reduces fill rate on thin CLOB books
+min_discount_pct = 0.005
+max_discount_pct = 0.05
 use_clob_pricing = true
 max_clob_entry_price = 0.80
