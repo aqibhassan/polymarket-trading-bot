@@ -2,11 +2,11 @@
 # Loaded on top of default.toml when --env production is specified.
 
 [risk]
-max_position_pct = 0.10              # 10% — ensures positions clear 5-token min after confidence scaling
+max_position_pct = 0.05              # 5% — small trades until confidence builds
 min_position_pct = 0.03              # 3% floor ensures >5 tokens at $100 balance
 max_daily_drawdown_pct = 0.15        # 15% kill switch — allows ~3 losses at $100 balance
 min_starting_balance = 10             # Minimum 10 USDC to start live trading
-kelly_multiplier = 0.25              # Quarter-Kelly (matches paper)
+kelly_multiplier = 0.15              # 15%-Kelly — cautious until confidence builds
 
 [risk.live_safety]
 balance_floor_pct = 0.50             # Halt if balance < 50% of initial
