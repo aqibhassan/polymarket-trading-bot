@@ -601,6 +601,31 @@ class BotOrchestrator:
             str(self._config.get("execution.pricing.fok_max_entry_price", 0.85))
         )
 
+        # Confidence-adaptive max entry price config
+        conf_adaptive = bool(
+            self._config.get("execution.pricing.confidence_adaptive_pricing", False)
+        )
+        conf_adaptive_base = Decimal(
+            str(self._config.get("execution.pricing.confidence_adaptive_base", 0.85))
+        )
+        conf_adaptive_scale = Decimal(
+            str(self._config.get("execution.pricing.confidence_adaptive_scale", 0.50))
+        )
+        conf_adaptive_cap = Decimal(
+            str(self._config.get("execution.pricing.confidence_adaptive_cap", 0.92))
+        )
+
+        # Per-signal confidence Kelly sizing config
+        use_signal_kelly = bool(
+            self._config.get("execution.pricing.use_signal_confidence_kelly", False)
+        )
+        kelly_conf_floor = Decimal(
+            str(self._config.get("execution.pricing.kelly_confidence_floor", 0.80))
+        )
+        kelly_conf_cap = Decimal(
+            str(self._config.get("execution.pricing.kelly_confidence_cap", 0.95))
+        )
+
         # --- Component setup ---
         kline_ws_url = os.environ.get(
             "BINANCE_WS_URL",
@@ -1599,9 +1624,14 @@ class BotOrchestrator:
                                             if clob_best_bid
                                             else None
                                         )
+                                    # Apply confidence-adaptive max to mid-tick FOK upgrade
+                                    _upgrade_fok_max = fok_max_entry_price
+                                    if conf_adaptive and last_confidence > float(conf_adaptive_base):
+                                        _up_boost = Decimal(str(last_confidence - float(conf_adaptive_base))) * conf_adaptive_scale
+                                        _upgrade_fok_max = min(fok_max_entry_price + _up_boost, conf_adaptive_cap)
                                     if (
                                         _fok_price is not None
-                                        and _fok_price <= fok_max_entry_price
+                                        and _fok_price <= _upgrade_fok_max
                                         and last_token_id
                                         and last_market_id
                                     ):
@@ -1821,11 +1851,29 @@ class BotOrchestrator:
 
                         # Safety gate: reject entries where CLOB price is too high.
                         # FOK taker has a more permissive limit (pays more for guaranteed fill).
+                        # Confidence-adaptive: high-confidence signals can buy at higher prices.
+                        _sig_conf = float(sig.confidence.overall) if sig.confidence else 0.5
+                        if conf_adaptive and _sig_conf > float(conf_adaptive_base):
+                            _conf_boost = Decimal(str(_sig_conf - float(conf_adaptive_base))) * conf_adaptive_scale
+                            effective_max_clob = min(max_clob_entry_price + _conf_boost, conf_adaptive_cap)
+                            effective_fok_max = min(fok_max_entry_price + _conf_boost, conf_adaptive_cap)
+                        else:
+                            effective_max_clob = max_clob_entry_price
+                            effective_fok_max = fok_max_entry_price
+
                         _effective_max = (
-                            fok_max_entry_price
+                            effective_fok_max
                             if order_type_selected == OrderType.FOK
-                            else max_clob_entry_price
+                            else effective_max_clob
                         )
+                        if conf_adaptive:
+                            logger.info(
+                                "confidence_adaptive_pricing",
+                                effective_max=str(_effective_max),
+                                base_max=str(max_clob_entry_price if order_type_selected != OrderType.FOK else fok_max_entry_price),
+                                confidence=round(_sig_conf, 4),
+                                order_type=order_type_selected.value,
+                            )
                         if entry_price > _effective_max:
                             logger.info(
                                 "clob_entry_price_too_high",
@@ -1849,10 +1897,26 @@ class BotOrchestrator:
                                 capped_reason="fixed_bet",
                             )
                         else:
+                            # Per-signal confidence Kelly: use signal confidence
+                            # instead of static estimated_win_prob when it's higher.
+                            if use_signal_kelly and _sig_conf > float(estimated_win_prob):
+                                effective_win_prob = min(
+                                    max(Decimal(str(_sig_conf)), kelly_conf_floor),
+                                    kelly_conf_cap,
+                                )
+                            else:
+                                effective_win_prob = estimated_win_prob
+                            if effective_win_prob != estimated_win_prob:
+                                logger.info(
+                                    "signal_confidence_kelly",
+                                    static_prob=str(estimated_win_prob),
+                                    effective_prob=str(effective_win_prob),
+                                    signal_confidence=round(_sig_conf, 4),
+                                )
                             sizing = position_sizer.calculate_binary(
                                 balance=cached_balance,
                                 entry_price=entry_price,
-                                estimated_win_prob=estimated_win_prob,
+                                estimated_win_prob=effective_win_prob,
                             )
                             # Convert USD recommendation to shares
                             position_size = sizing.recommended_size / entry_price
@@ -1910,6 +1974,8 @@ class BotOrchestrator:
                                 "original_entry_price": str(original_entry_price),
                                 "discount_applied": str(entry_price != original_entry_price),
                                 "estimated_win_prob": str(estimated_win_prob),
+                                "effective_win_prob": str(effective_win_prob) if not self._fixed_bet_size else str(estimated_win_prob),
+                                "effective_max_entry": str(_effective_max),
                             }, ttl=120)
                         except Exception:
                             logger.debug("sizing_publish_failed", exc_info=True)

@@ -129,6 +129,17 @@ fok_spread_threshold = 0.30      # Spread < 30% → eligible for FOK taker
 fok_late_minute_threshold = 11   # After minute 11, always attempt FOK
 fok_max_entry_price = 0.85       # FOK taker max entry (more permissive than GTC 0.80)
 
+# Confidence-adaptive pricing: scale max entry price with signal confidence
+confidence_adaptive_pricing = true
+confidence_adaptive_base = 0.85      # start adjusting above this confidence level
+confidence_adaptive_scale = 0.50     # max_price += (confidence - base) * scale
+confidence_adaptive_cap = 0.92       # absolute ceiling on entry price
+
+# Use per-signal confidence in Kelly sizing (instead of static estimated_win_prob)
+use_signal_confidence_kelly = true
+kelly_confidence_floor = 0.80        # never use less than this in Kelly
+kelly_confidence_cap = 0.95          # never use more than this in Kelly
+
 [bot]
 tick_interval_seconds = 5
 

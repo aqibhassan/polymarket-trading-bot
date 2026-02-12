@@ -15,6 +15,13 @@
 # Best by win rate (500+ trades):
 #   WinRate=97.1%, Sharpe=2.48, Trades=16,445, MaxDD=0.5%, PF=32.21
 #   (uses min_confidence=0.70, weight_momentum=0.80, time_filter=off, last3=on)
+#
+# LIVE-TUNED: 2026-02-12 — Track 1 parameter relaxation
+# Problem: 36+ evaluations, 0 trades in 10+ hours.
+#   78% skips = insufficient_agreement (only 1-2 directional signals fire)
+#   22% skips = low_confidence (max was 59.6% vs 62% threshold)
+# Fix: Lower individual signal thresholds so more signals produce directional
+#   votes, widen entry window, reduce confidence floor, raise contrarian deadzone.
 
 [strategy.singularity]
 # --- Signal weights (must sum to 1.0) ---
@@ -24,21 +31,20 @@ weight_futures = 0.18      # futures lead-lag
 weight_vol = 0.14          # volatility regime
 weight_time = 0.13         # time-of-day (neutral meta-signal)
 
-# --- Entry parameters (RE-OPTIMIZED) ---
-min_signals_agree = 3       # raised for live: require 3+ directional signals for robust consensus
-min_confidence = 0.62       # raised for live: 0.45 let through weak signals (Trade 3 at 0.59 lost)
-entry_minute_start = 8      # universally optimal across all configs
-entry_minute_end = 12       # extended from 11 → 12 (adds high-quality late entries)
+# --- Entry parameters (LIVE-TUNED 2026-02-12) ---
+min_signals_agree = 3       # require 3+ directional signals for robust consensus
+min_confidence = 0.55       # lowered from 0.62: max observed was 59.6%, need headroom
+entry_minute_start = 7      # widened from 8: catch earlier momentum (min 7)
+entry_minute_end = 13       # widened from 12: allow late entries (min 13)
 
-# --- Contrarian filter ---
+# --- Contrarian filter (LIVE-TUNED 2026-02-12) ---
 # Skip bets that go against BTC cumulative return direction.
 # Data shows aligned bets (YES when BTC up, NO when BTC down) have ~100% WR
 # while contrarian bets (opposite) have ~40% WR.
-# Tuned Feb 11: raised from 0.0→0.05 to allow entries when BTC has moved
-# < 0.05% against signal direction. At 0.0% any fractional move was blocking
-# legitimate ensemble signals (~5% of skips were from this filter).
+# Raised from 0.05 -> 0.08: wider deadzone lets more entries through when BTC
+# has moved slightly against signal direction (common in low-vol 15m windows).
 skip_contrarian = true          # enable contrarian bet filtering
-contrarian_threshold_pct = 0.05 # min cum_return % to consider directional
+contrarian_threshold_pct = 0.08 # min cum_return % to consider directional
 
 # --- Exit parameters ---
 # NOTE: Resolution guard and signal reversal are currently inoperative in
@@ -55,14 +61,14 @@ profit_target_pct = 0.40
 max_position_pct = 0.05     # 5% max — Kelly sizes up to this with 93% WR
 min_position_pct = 0.01     # 1% floor — always participate when signal fires
 
-# --- OFI parameters ---
+# --- OFI parameters (LIVE-TUNED 2026-02-12) ---
 ofi_levels = 20                 # live-tuned: read deeper book for real imbalance (was 5)
-ofi_signal_threshold = 0.04     # live-tuned: Polymarket books balanced even at 20 levels (was 0.25)
+ofi_signal_threshold = 0.02     # lowered from 0.04: OFI was the only signal firing, let smaller imbalances vote
 ofi_saturation = 0.20           # live-tuned: proportional to lower threshold (was 0.40)
 
-# --- Futures lead-lag parameters ---
+# --- Futures lead-lag parameters (LIVE-TUNED 2026-02-12) ---
 futures_lead_threshold_pct = 0.001    # live-tuned: perps and spot track within $1, velocity is the real signal (was 0.15)
-futures_velocity_threshold_pct = 0.08 # live-tuned: paper-discovery threshold (was 1.0)
+futures_velocity_threshold_pct = 0.04 # lowered from 0.08: let smaller velocity changes produce directional votes
 
 # --- Tick granularity parameters ---
 early_move_threshold_pct = 0.08
@@ -76,32 +82,42 @@ vol_low_threshold = 0.80
 # --- Estimated win probability (for Kelly sizing) ---
 estimated_win_prob = 0.93    # updated from re-optimization: 93.0% with balanced config
 
-# --- Momentum tiered thresholds ---
-# Lowered Feb 11 based on live data: momentum was not voting in 85% of skipped
-# windows (28/33 skips were insufficient_agreement, typically YES=0/1 NO=0/1).
-# Only OFI was producing directional votes. Lower thresholds let momentum fire
-# more often in low-vol windows, giving the 2nd directional vote needed.
-# Original: 0.14/0.12/0.09/0.07/0.05 → New: 0.10/0.08/0.06/0.04/0.02
+# --- Momentum tiered thresholds (LIVE-TUNED 2026-02-12) ---
+# Lowered ~30% from prior values + added minutes 7 and 13 for wider window.
+# Problem: momentum was not voting in 85% of skipped windows because BTC
+# cumulative return was below the threshold. Lower thresholds let momentum
+# fire more often in low-vol windows, providing the 2nd directional vote
+# needed to pass the effective_min=2 floor.
+# Previous: min8=0.10, min9=0.08, min10=0.06, min11=0.04, min12=0.02
+# New:      min7=0.12, min8=0.07, min9=0.055, min10=0.04, min11=0.03, min12=0.015, min13=0.01
 # NOTE: Array-of-tables MUST come last in TOML (closes the parent section)
 [[strategy.singularity.entry_tiers]]
+minute = 7
+threshold_pct = 0.12
+
+[[strategy.singularity.entry_tiers]]
 minute = 8
-threshold_pct = 0.10
+threshold_pct = 0.07
 
 [[strategy.singularity.entry_tiers]]
 minute = 9
-threshold_pct = 0.08
+threshold_pct = 0.055
 
 [[strategy.singularity.entry_tiers]]
 minute = 10
-threshold_pct = 0.06
-
-[[strategy.singularity.entry_tiers]]
-minute = 11
 threshold_pct = 0.04
 
 [[strategy.singularity.entry_tiers]]
+minute = 11
+threshold_pct = 0.03
+
+[[strategy.singularity.entry_tiers]]
 minute = 12
-threshold_pct = 0.02
+threshold_pct = 0.015
+
+[[strategy.singularity.entry_tiers]]
+minute = 13
+threshold_pct = 0.01
 
 # --- Alternative high-accuracy profile (uncomment to use) ---
 # min_confidence = 0.70     # 97.1% win rate, fewer trades (16K)
