@@ -2208,18 +2208,16 @@ class BotOrchestrator:
                             clob_spread = Decimal("1")
 
                         # Select order type: FAK (fak_only=True) or legacy GTC/FAK
-                        order_type_selected = (
-                            self._select_order_type(
-                                clob_last_trade=clob_last_trade,
-                                clob_spread=clob_spread,
-                                minute_in_window=minute_in_window,
-                                fok_spread_threshold=fok_spread_threshold,
-                                fok_late_minute=fok_late_minute,
-                                use_fak_taker=use_fak_taker,
-                                fak_only=fak_only,
-                            )
-                            if bridge.mode == "live"
-                            else OrderType.LIMIT
+                        # Paper mode must use same order type as live to ensure
+                        # realistic fills — FAK requires real ask to cross.
+                        order_type_selected = self._select_order_type(
+                            clob_last_trade=clob_last_trade,
+                            clob_spread=clob_spread,
+                            minute_in_window=minute_in_window,
+                            fok_spread_threshold=fok_spread_threshold,
+                            fok_late_minute=fok_late_minute,
+                            use_fak_taker=use_fak_taker,
+                            fak_only=fak_only,
                         )
 
                         # GTC spread gate REMOVED: GTC is a resting limit order —
@@ -2266,11 +2264,27 @@ class BotOrchestrator:
 
                         # REST fallback: when WS data yields no price or a desert
                         # computed_mid (~0.50 from 0.01/0.99 book), call REST API.
-                        _is_desert_price = (
+                        # Desert detection: catch computed_mid AND midpoint
+                        # sources when price is near 0.50 (from 0.01/0.99 book).
+                        _is_midpoint_source = (
                             "computed_mid" in price_source
+                            or "midpoint" in price_source
+                        )
+                        _is_desert_price = (
+                            _is_midpoint_source
                             and entry_price is not None
                             and abs(entry_price - Decimal("0.50")) < Decimal("0.05")
                         )
+                        # Paper mode: skip desert immediately — no REST API and
+                        # FAK would never fill on a 0.01/0.99 book in live.
+                        if _is_desert_price and bridge.mode != "live":
+                            logger.info(
+                                "desert_skip_paper",
+                                price=str(entry_price),
+                                source=price_source,
+                                minute=minute_in_window,
+                            )
+                            continue
                         if (entry_price is None or _is_desert_price) and bridge.mode == "live" and bridge._live_trader:
                             _clob_client = bridge._live_trader._clob_client
                             _target_tid = no_token_id if sig.direction == Side.NO else yes_token_id
