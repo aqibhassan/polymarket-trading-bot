@@ -54,8 +54,8 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               <h1 className="text-emerald-500 font-bold text-xl tracking-tight">
                 MVHE
               </h1>
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 ring-1 ring-red-500/50">
-                LIVE
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/50">
+                PAPER
               </span>
             </div>
             <p className="text-zinc-500 text-xs mt-1">Dashboard</p>
