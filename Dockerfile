@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ src/
 COPY config/ config/
+COPY scripts/ scripts/
 
 RUN useradd --create-home --shell /bin/bash mvhe
 USER mvhe

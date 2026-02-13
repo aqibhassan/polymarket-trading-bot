@@ -69,13 +69,13 @@ export default function PerformancePage() {
       const rwData = await rwRes.json();
       const skData = await skRes.json();
 
-      setSummary(sumData);
+      setSummary(sumData.bankroll != null ? sumData : null);
       setMetrics(metData.total_trades != null ? metData : null);
-      setEquityData(eqData.data || eqData || []);
-      setDailyPnl(dpData.data || dpData || []);
-      setConfidenceDist(cdData.data || cdData || []);
-      setEntryPrice(epData.data || epData || []);
-      setRollingWR(rwData.data || rwData || []);
+      setEquityData(Array.isArray(eqData.data) ? eqData.data : Array.isArray(eqData) ? eqData : []);
+      setDailyPnl(Array.isArray(dpData.data) ? dpData.data : Array.isArray(dpData) ? dpData : []);
+      setConfidenceDist(Array.isArray(cdData.data) ? cdData.data : Array.isArray(cdData) ? cdData : []);
+      setEntryPrice(Array.isArray(epData.data) ? epData.data : Array.isArray(epData) ? epData : []);
+      setRollingWR(Array.isArray(rwData.data) ? rwData.data : Array.isArray(rwData) ? rwData : []);
       setSkipMetrics(skData.total_windows != null ? skData : null);
       setError(null);
     } catch {

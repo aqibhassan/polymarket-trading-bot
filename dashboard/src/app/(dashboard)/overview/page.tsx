@@ -30,8 +30,8 @@ export default function OverviewPage() {
       const eqData = await eqRes.json();
       const dpData = await dpRes.json();
       const skData = await skRes.json();
-      setEquityData(eqData.data || eqData || []);
-      setDailyPnl(dpData.data || dpData || []);
+      setEquityData(Array.isArray(eqData.data) ? eqData.data : Array.isArray(eqData) ? eqData : []);
+      setDailyPnl(Array.isArray(dpData.data) ? dpData.data : Array.isArray(dpData) ? dpData : []);
       setSkipMetrics(skData.total_windows != null ? skData : null);
       setError(null);
     } catch {

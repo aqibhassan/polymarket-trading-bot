@@ -68,6 +68,8 @@ services:
       CLICKHOUSE_PORT: 8123
       TIMESCALEDB_URL: postgresql://mvhe:mvhe_dev@timescaledb:5432/mvhe
       BINANCE_WS_URL: wss://fstream.binance.com/ws/btcusdt@kline_1m
+    volumes:
+      - mvhe_logs:/app/logs
     depends_on:
       redis:
         condition: service_healthy
@@ -83,6 +85,23 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  bwo-data-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: []
+    command: ["python", "-m", "uvicorn", "scripts.bwo_data_server:app", "--host", "0.0.0.0", "--port", "8100"]
+    environment:
+      BWO_LOG_DIR: /app/logs
+    volumes:
+      - mvhe_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8100/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
   dashboard:
     build:
       context: ./dashboard
@@ -96,6 +115,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-changeme}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production}
+      BWO_API_URL: http://bwo-data-server:8100
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -103,9 +123,12 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+      bwo-data-server:
+        condition: service_healthy
 
 volumes:
   timescaledb_data:
   redis_data:
   clickhouse_data:
   grafana_data:
+  mvhe_logs:

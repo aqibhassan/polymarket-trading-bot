@@ -15,6 +15,11 @@ export function useBwoState(refreshInterval = 10000) {
         fetch('/api/summary'),
         fetch('/api/health'),
       ]);
+      if (!sumRes.ok || !healthRes.ok) {
+        setConnected(false);
+        setError('Data server returned an error');
+        return;
+      }
       const sumData = await sumRes.json();
       const healthData = await healthRes.json();
       setSummary(sumData);
