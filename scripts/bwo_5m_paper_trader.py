@@ -768,7 +768,7 @@ def main() -> None:
                                     # EV-based entry: cont_prob must exceed entry_price + MIN_EDGE
                                     ev_ok = cont_prob > (ask_price + MIN_EDGE)
                                     price_ok = ask_price <= MAX_ENTRY_PRICE
-                                    depth_ok = ask_size >= 10
+                                    depth_ok = ask_size >= 5  # Paper trading: relaxed depth
 
                                     if ev_ok and price_ok and depth_ok:
                                         # Paper buy
