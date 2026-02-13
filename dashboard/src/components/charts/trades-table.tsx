@@ -10,11 +10,11 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { timeAgo } from '@/lib/format';
-import type { BWOTradeRecord } from '@/lib/types/bwo';
+import { safeNum, timeAgo } from '@/lib/format';
+import type { Trade } from '@/lib/types/trade';
 
 interface TradesTableProps {
-  trades: BWOTradeRecord[];
+  trades: Trade[];
   page?: number;
   totalPages?: number;
   onPageChange?: (page: number) => void;
@@ -37,42 +37,42 @@ export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTa
         <TableHeader>
           <TableRow>
             <TableHead>Time</TableHead>
-            <TableHead>Side</TableHead>
-            <TableHead>BTC Dir</TableHead>
-            <TableHead className="text-right">Entry $</TableHead>
-            <TableHead className="text-right">Settle</TableHead>
-            <TableHead className="text-right">Shares</TableHead>
+            <TableHead>Direction</TableHead>
+            <TableHead className="text-right">Entry</TableHead>
+            <TableHead className="text-right">CLOB</TableHead>
+            <TableHead className="text-right">Exit</TableHead>
+            <TableHead className="text-right">Size</TableHead>
             <TableHead className="text-right">P&L</TableHead>
-            <TableHead className="text-right">Confidence</TableHead>
-            <TableHead>Result</TableHead>
+            <TableHead className="text-right">R:R</TableHead>
+            <TableHead>Exit Reason</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {trades.map((trade, i) => {
-            const pnl = trade.pnl_net;
+          {trades.map((trade) => {
+            const pnl = safeNum(trade.pnl);
             return (
-              <TableRow key={`${trade.window_ts}-${i}`}>
+              <TableRow key={trade.trade_id}>
                 <TableCell className="font-mono text-xs text-zinc-400">
-                  {timeAgo(trade.window_ts)}
+                  {timeAgo(trade.entry_time)}
                 </TableCell>
                 <TableCell>
-                  <Badge variant={trade.side === 'YES' ? 'success' : 'destructive'}>
-                    {trade.side}
+                  <Badge variant={trade.direction === 'YES' ? 'success' : 'destructive'}>
+                    {trade.direction}
                   </Badge>
                 </TableCell>
-                <TableCell>
-                  <span className={trade.btc_direction === 'UP' ? 'text-emerald-400' : 'text-red-400'}>
-                    {trade.btc_direction}
-                  </span>
+                <TableCell className="text-right font-mono">
+                  ${safeNum(trade.entry_price).toFixed(4)}
+                </TableCell>
+                <TableCell className="text-right font-mono text-zinc-400" title={safeNum(trade.clob_entry_price) > 0 ? '' : 'No CLOB data available at trade time'}>
+                  {safeNum(trade.clob_entry_price) > 0
+                    ? `$${safeNum(trade.clob_entry_price).toFixed(4)}`
+                    : 'N/A'}
                 </TableCell>
                 <TableCell className="text-right font-mono">
-                  ${trade.entry_price.toFixed(4)}
+                  ${safeNum(trade.exit_price).toFixed(4)}
                 </TableCell>
                 <TableCell className="text-right font-mono">
-                  ${trade.settlement.toFixed(2)}
-                </TableCell>
-                <TableCell className="text-right font-mono">
-                  {trade.shares.toFixed(2)}
+                  ${safeNum(trade.position_size).toFixed(2)}
                 </TableCell>
                 <TableCell
                   className={cn(
@@ -82,13 +82,13 @@ export function TradesTable({ trades, page, totalPages, onPageChange }: TradesTa
                 >
                   {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
                 </TableCell>
-                <TableCell className="text-right font-mono text-zinc-400">
-                  {(trade.cont_prob * 100).toFixed(1)}%
+                <TableCell className="text-right font-mono text-zinc-400" title={safeNum(trade.bet_to_win_ratio) > 0 ? '' : 'No CLOB data'}>
+                  {safeNum(trade.bet_to_win_ratio) > 0
+                    ? `1:${(1 / safeNum(trade.bet_to_win_ratio)).toFixed(1)}`
+                    : '—'}
                 </TableCell>
                 <TableCell>
-                  <Badge variant={trade.correct ? 'success' : 'destructive'}>
-                    {trade.correct ? 'WIN' : 'LOSS'}
-                  </Badge>
+                  <Badge variant="secondary">{trade.exit_reason || '--'}</Badge>
                 </TableCell>
               </TableRow>
             );

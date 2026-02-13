@@ -1,0 +1,16 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getStrategyPerformance } from '@/lib/queries/trades';
+import { validStrategy } from '@/lib/validation';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const strategy = validStrategy(searchParams.get('strategy'));
+    const data = await getStrategyPerformance(strategy);
+    return NextResponse.json(data || {});
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch performance' }, { status: 500 });
+  }
+}
+
+export const dynamic = 'force-dynamic';

@@ -1,86 +1,155 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useBwoState } from '@/lib/hooks/use-bwo-state';
-import { useBwoTrades } from '@/lib/hooks/use-bwo-trades';
+import { useBotState } from '@/lib/hooks/use-bot-state';
+import { useTrades } from '@/lib/hooks/use-trades';
 import { StatCard } from '@/components/charts/stat-card';
+import { MarketStatePanel } from '@/components/charts/market-state-panel';
+import { SignalPanel } from '@/components/charts/signal-panel';
+import { TradeFeed } from '@/components/charts/trade-feed';
+import { SignalActivityFeed } from '@/components/charts/signal-activity-feed';
 import { EquityCurve } from '@/components/charts/equity-curve';
+import { PositionCard } from '@/components/charts/position-card';
+import { SizingCard } from '@/components/charts/sizing-card';
 import { TradesTable } from '@/components/charts/trades-table';
 import { Badge } from '@/components/ui/badge';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DollarSign, TrendingUp, Trophy, BarChart3, Activity } from 'lucide-react';
-import type { BWOEquityPoint, BWODailyPnl, BWOSkipMetrics } from '@/lib/types/bwo';
+import { safeNum } from '@/lib/format';
+import type { DailyPnl, StrategyPerformance } from '@/lib/types/trade';
 
 export default function OverviewPage() {
-  const { summary, health, connected, error: stateError, refresh } = useBwoState();
-  const { trades, page: tradePage, totalPages: tradeTotalPages, total: tradeTotal, setPage: setTradePage } = useBwoTrades(10);
-  const [equityData, setEquityData] = useState<BWOEquityPoint[]>([]);
-  const [dailyPnl, setDailyPnl] = useState<BWODailyPnl[]>([]);
-  const [skipMetrics, setSkipMetrics] = useState<BWOSkipMetrics | null>(null);
+  const { state, connected } = useBotState();
+  const { trades, page: tradePage, totalPages: tradeTotalPages, setPage: setTradePage } = useTrades(10, 10000);
+  const [equityData, setEquityData] = useState<Array<{ time: string; cumulative_pnl: number }>>([]);
+  const [killSwitch, setKillSwitch] = useState(false);
+  // ClickHouse fallback for daily stats when Redis is empty/stale
+  const [chDaily, setChDaily] = useState<DailyPnl | null>(null);
+  const [chTotalPnl, setChTotalPnl] = useState<number>(0);
+  // Total performance from ClickHouse (all-time stats)
+  const [totalPerf, setTotalPerf] = useState<StrategyPerformance | null>(null);
+  const [strategy, setStrategy] = useState('singularity');
   const [error, setError] = useState<string | null>(null);
 
-  const fetchExtra = useCallback(async () => {
+  // Detect strategy from heartbeat SSE
+  useEffect(() => {
+    if (state.heartbeat?.strategy) setStrategy(state.heartbeat.strategy);
+  }, [state.heartbeat?.strategy]);
+
+  const fetchClickhouseFallback = useCallback(async () => {
+    let fetchError: string | null = null;
+
     try {
-      const [eqRes, dpRes, skRes] = await Promise.all([
-        fetch('/api/equity-curve'),
-        fetch('/api/daily-pnl'),
-        fetch('/api/skip-metrics'),
-      ]);
-      const eqData = await eqRes.json();
-      const dpData = await dpRes.json();
-      const skData = await skRes.json();
-      setEquityData(Array.isArray(eqData.data) ? eqData.data : Array.isArray(eqData) ? eqData : []);
-      setDailyPnl(Array.isArray(dpData.data) ? dpData.data : Array.isArray(dpData) ? dpData : []);
-      setSkipMetrics(skData.total_windows != null ? skData : null);
-      setError(null);
+      const today = new Date().toISOString().split('T')[0];
+      const res = await fetch(`/api/daily-pnl?date=${today}`);
+      const data = await res.json();
+      const rows: DailyPnl[] = data.data || [];
+      if (rows.length > 0) {
+        const combined: DailyPnl = {
+          strategy: 'all',
+          trade_count: rows.reduce((s, r) => s + Number(r.trade_count), 0),
+          total_pnl: rows.reduce((s, r) => s + Number(r.total_pnl), 0),
+          total_fees: rows.reduce((s, r) => s + Number(r.total_fees), 0),
+          win_count: rows.reduce((s, r) => s + Number(r.win_count), 0),
+        };
+        setChDaily(combined);
+      }
     } catch {
-      setError('Failed to load chart data');
+      fetchError = 'Failed to load daily stats';
     }
-  }, []);
+
+    try {
+      const eqRes = await fetch('/api/equity-curve');
+      const eqData = await eqRes.json();
+      const curve = eqData.data || [];
+      setEquityData(curve);
+      if (curve.length > 0) {
+        setChTotalPnl(Number(curve[curve.length - 1].cumulative_pnl));
+      }
+    } catch {
+      fetchError = 'Failed to load equity data';
+    }
+
+    // Total performance (all-time) from ClickHouse
+    try {
+      const perfRes = await fetch(`/api/performance?strategy=${strategy}`);
+      const perfData = await perfRes.json();
+      if (perfData.trade_count) setTotalPerf(perfData);
+    } catch {
+      fetchError = 'Failed to load performance data';
+    }
+
+    setError(fetchError);
+  }, [strategy]);
 
   useEffect(() => {
-    fetchExtra();
-    const interval = setInterval(fetchExtra, 10000);
+    const fetchKillSwitch = async () => {
+      try {
+        const res = await fetch('/api/kill-switch');
+        const data = await res.json();
+        setKillSwitch(data.active || false);
+      } catch { /* ignore */ }
+    };
+
+    fetchClickhouseFallback();
+    fetchKillSwitch();
+    const interval = setInterval(() => {
+      fetchClickhouseFallback();
+      fetchKillSwitch();
+    }, 10000);
     return () => clearInterval(interval);
-  }, [fetchExtra]);
+  }, [fetchClickhouseFallback]);
 
-  // Today stats from daily PnL
-  const today = new Date().toISOString().split('T')[0];
-  const todayData = dailyPnl.find((d) => d.date === today);
-  const todayPnl = todayData?.pnl ?? 0;
-  const todayTrades = todayData?.trades ?? 0;
-  const todayWins = todayData?.wins ?? 0;
-  const todayLosses = todayData?.losses ?? 0;
-  const todayWR = todayTrades > 0 ? ((todayWins / todayTrades) * 100).toFixed(1) : '--';
+  // Prefer ClickHouse daily stats, but fall back to Redis bot daily state
+  // when ClickHouse returns empty (e.g. trades entered yesterday UTC but
+  // the bot session spans midnight).
+  const useRedisDaily = !chDaily && state.daily;
+  const dailyPnl = chDaily?.total_pnl ?? (useRedisDaily ? Number(state.daily!.daily_pnl) || 0 : 0);
+  const tradeCount = chDaily?.trade_count ?? (useRedisDaily ? state.daily!.trade_count : 0);
+  const winCount = chDaily?.win_count ?? (useRedisDaily ? state.daily!.win_count : 0);
+  const lossCount = useRedisDaily ? (state.daily!.loss_count ?? tradeCount - winCount) : tradeCount - winCount;
+  const winRate = tradeCount > 0 ? ((winCount / tradeCount) * 100).toFixed(1) : '—';
 
-  // All-time stats from summary
-  const bankroll = summary?.bankroll ?? 0;
-  const totalPnl = summary?.total_pnl ?? 0;
-  const winRate = summary?.win_rate ?? 0;
-  const totalTrades = summary?.total_trades ?? 0;
-  const evPerTrade = summary?.ev_per_trade ?? 0;
+  // Balance: use real balance from Redis — no hardcoded fallback
+  const redisBalance = state.balance ? Number(state.balance.balance) : null;
+  const redisInitial = state.balance ? Number(state.balance.initial_balance) : null;
+  const hasInitialBalance = redisInitial != null && Number.isFinite(redisInitial) && redisInitial > 0;
+  const initialBalance = hasInitialBalance ? redisInitial : 0;
+  const displayBalance = redisBalance != null && Number.isFinite(redisBalance) && redisBalance > 0
+    ? redisBalance
+    : hasInitialBalance ? initialBalance + chTotalPnl : null;
+  const displayPnl = chTotalPnl;
+  const displayPnlPct = initialBalance > 0 ? (chTotalPnl / initialBalance) * 100 : null;
 
-  const pnlTrend = totalPnl >= 0 ? 'up' as const : 'down' as const;
-
-  // Last 5 trades for mini table
-  const last5 = trades.slice(0, 5);
-
-  const displayError = stateError || error;
+  const pnlTrend = displayPnl >= 0 ? 'up' as const : 'down' as const;
+  const pnlPctStr = displayPnlPct != null
+    ? `${displayPnlPct >= 0 ? '+' : ''}${displayPnlPct.toFixed(2)}%`
+    : null;
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <h1 className="text-xl md:text-2xl font-bold text-zinc-50">BWO 5m Paper Trader</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Live Overview</h1>
+          <span className="text-xs font-bold px-2 py-0.5 rounded bg-red-500/20 text-red-400 ring-1 ring-red-500/50">
+            LIVE
+          </span>
         </div>
-        <Badge variant={connected ? 'success' : 'destructive'}>
-          {connected ? 'Connected' : 'Disconnected'}
-        </Badge>
+        <div className="flex items-center gap-3">
+          {killSwitch && (
+            <Badge variant="destructive" className="animate-pulse text-sm px-3 py-1">
+              KILL SWITCH ACTIVE
+            </Badge>
+          )}
+          <Badge variant={connected ? 'success' : 'destructive'}>
+            {connected ? 'Connected' : 'Disconnected'}
+          </Badge>
+        </div>
       </div>
 
-      {displayError && <ErrorBanner message={displayError} onRetry={refresh} />}
+      {error && <ErrorBanner message={error} onRetry={fetchClickhouseFallback} />}
 
       {/* All Time Stats */}
       <div>
@@ -88,25 +157,28 @@ export default function OverviewPage() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard
             title="Balance"
-            value={`$${bankroll.toFixed(2)}`}
+            value={displayBalance != null ? `$${displayBalance.toFixed(2)}` : '—'}
             trend={pnlTrend}
+            trendValue={pnlPctStr ?? undefined}
             icon={<DollarSign className="h-4 w-4" />}
           />
           <StatCard
             title="Total P&L"
-            value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
+            value={`$${displayPnl.toFixed(2)}`}
             trend={pnlTrend}
             icon={<TrendingUp className="h-4 w-4" />}
           />
           <StatCard
             title="Win Rate"
-            value={totalTrades > 0 ? `${(winRate * 100).toFixed(1)}%` : '--'}
-            subtitle={totalTrades > 0 ? `${summary?.wins ?? 0}W / ${summary?.losses ?? 0}L` : ''}
+            value={totalPerf && safeNum(totalPerf.trade_count) > 0
+              ? `${((safeNum(totalPerf.win_count) / safeNum(totalPerf.trade_count)) * 100).toFixed(1)}%`
+              : '—'}
+            subtitle={totalPerf ? `${safeNum(totalPerf.win_count)}W / ${safeNum(totalPerf.trade_count) - safeNum(totalPerf.win_count)}L` : ''}
             icon={<Trophy className="h-4 w-4" />}
           />
           <StatCard
             title="Total Trades"
-            value={totalTrades}
+            value={totalPerf ? safeNum(totalPerf.trade_count) : 0}
             icon={<BarChart3 className="h-4 w-4" />}
           />
         </div>
@@ -118,110 +190,59 @@ export default function OverviewPage() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard
             title="Daily P&L"
-            value={`${todayPnl >= 0 ? '+' : ''}$${todayPnl.toFixed(2)}`}
-            trend={todayPnl >= 0 ? 'up' : 'down'}
+            value={`$${dailyPnl.toFixed(2)}`}
+            trend={dailyPnl >= 0 ? 'up' : 'down'}
             icon={<TrendingUp className="h-4 w-4" />}
           />
           <StatCard
             title="Win Rate (Today)"
-            value={todayWR !== '--' ? `${todayWR}%` : '--'}
-            subtitle={todayTrades > 0 ? `${todayWins}W / ${todayLosses}L` : ''}
+            value={winRate !== '—' ? `${winRate}%` : '—'}
+            subtitle={`${winCount}W / ${lossCount}L`}
             icon={<Trophy className="h-4 w-4" />}
           />
           <StatCard
             title="Trades Today"
-            value={todayTrades}
+            value={tradeCount}
             icon={<BarChart3 className="h-4 w-4" />}
           />
           <StatCard
-            title="EV/Trade"
-            value={totalTrades > 0 ? `$${evPerTrade.toFixed(2)}` : '--'}
-            trend={evPerTrade >= 0 ? 'up' : 'down'}
+            title="Avg Trade"
+            value={totalPerf && safeNum(totalPerf.trade_count) > 0
+              ? `$${safeNum(totalPerf.avg_pnl).toFixed(2)}`
+              : '—'}
+            trend={totalPerf && safeNum(totalPerf.avg_pnl) >= 0 ? 'up' : 'down'}
             icon={<Activity className="h-4 w-4" />}
           />
         </div>
       </div>
 
-      {/* Equity Curve */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium text-zinc-400">Equity Curve</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <EquityCurve data={equityData} height={300} />
-        </CardContent>
-      </Card>
+      {/* Market State Panel — full width */}
+      <MarketStatePanel window={state.window} />
 
-      {/* Two-col: Last 5 trades + Skip Rate */}
+      {/* Signal Panel + Trade Feed */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Last 5 Trades */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium text-zinc-400">Last 5 Trades</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {last5.length > 0 ? (
-              <div className="space-y-2">
-                {last5.map((t, i) => (
-                  <div key={i} className="flex items-center justify-between py-2 border-b border-zinc-800 last:border-0">
-                    <div className="flex items-center gap-2">
-                      <Badge variant={t.side === 'YES' ? 'success' : 'destructive'} className="text-xs">
-                        {t.side}
-                      </Badge>
-                      <span className="text-xs text-zinc-400 font-mono">${t.entry_price.toFixed(4)}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className={`text-xs font-mono font-semibold ${t.pnl_net >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {t.pnl_net >= 0 ? '+' : ''}${t.pnl_net.toFixed(2)}
-                      </span>
-                      <Badge variant={t.correct ? 'success' : 'destructive'} className="text-xs">
-                        {t.correct ? 'WIN' : 'LOSS'}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-32 text-zinc-500">No trades yet</div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Skip Rate Summary */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium text-zinc-400">Skip Rate Summary</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {skipMetrics ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-xs text-zinc-500 uppercase">Total Windows</p>
-                    <p className="text-xl font-bold text-zinc-50">{skipMetrics.total_windows}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-zinc-500 uppercase">Entries</p>
-                    <p className="text-xl font-bold text-emerald-400">{skipMetrics.total_entries}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-zinc-500 uppercase">Skips</p>
-                    <p className="text-xl font-bold text-zinc-400">{skipMetrics.total_skips}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-zinc-500 uppercase">Skip Rate</p>
-                    <p className="text-xl font-bold text-zinc-50">{skipMetrics.skip_rate.toFixed(1)}%</p>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-32 text-zinc-500">No skip data</div>
-            )}
-          </CardContent>
-        </Card>
+        <SignalPanel signals={state.signals} />
+        <TradeFeed lastTrade={state.last_trade} activePosition={state.position} />
       </div>
 
-      {/* Full Trades Table */}
+      {/* Signal Activity Feed */}
+      <SignalActivityFeed activity={state.signal_activity} />
+
+      {/* Equity Curve + Position + Sizing */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle className="text-sm font-medium text-zinc-400">Equity Curve</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <EquityCurve data={equityData} height={280} />
+          </CardContent>
+        </Card>
+        <PositionCard position={state.position} />
+        <SizingCard sizing={state.sizing} />
+      </div>
+
+      {/* Recent Trades */}
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium text-zinc-400">Recent Trades</CardTitle>

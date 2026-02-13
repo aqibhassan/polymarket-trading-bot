@@ -24,7 +24,7 @@ export default function DashboardLayout({
         >
           <Menu className="h-5 w-5" />
         </button>
-        <span className="ml-3 text-emerald-500 font-bold text-lg tracking-tight">BWO</span>
+        <span className="ml-3 text-emerald-500 font-bold text-lg tracking-tight">MVHE</span>
       </div>
 
       <main className="flex-1 md:ml-60 p-4 md:p-6 pt-18 md:pt-6">{children}</main>

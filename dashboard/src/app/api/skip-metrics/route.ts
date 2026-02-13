@@ -1,14 +1,20 @@
 import { NextResponse } from 'next/server';
+import { getSkipMetrics } from '@/lib/queries/trades';
+import { validStrategy, validLimit } from '@/lib/validation';
 
-const BWO_API = process.env.BWO_API_URL || 'http://localhost:8100';
-
-export async function GET(req: Request) {
+export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(req.url);
-    const res = await fetch(`${BWO_API}/api/skip-reasons?${searchParams}`);
-    const data = await res.json();
-    return NextResponse.json(data);
-  } catch {
-    return NextResponse.json({ error: 'Failed to fetch from data server' }, { status: 502 });
+    const { searchParams } = new URL(request.url);
+    const strategy = validStrategy(searchParams.get('strategy'));
+    const days = validLimit(searchParams.get('days'), 7, 90);
+    const metrics = await getSkipMetrics(strategy, days);
+    return NextResponse.json(metrics);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to fetch skip metrics' },
+      { status: 500 },
+    );
   }
 }
+
+export const dynamic = 'force-dynamic';

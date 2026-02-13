@@ -5,8 +5,8 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'BWO Dashboard',
-  description: 'BWO 5m Paper Trader — Real-Time Monitoring',
+  title: 'MVHE Dashboard',
+  description: 'Micro-Volatility Harvesting Engine — Real-Time Monitoring',
 };
 
 export default function RootLayout({
