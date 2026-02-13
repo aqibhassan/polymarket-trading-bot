@@ -1,0 +1,55 @@
+# Before Window Open (BWO) Strategy Configuration
+# Enters BEFORE minute 0 at ~$0.50 fair value (up to $0.60 early).
+# Break-even at ~52% accuracy after Polymarket fees.
+#
+# Uses ensemble of pre-window BTC signals:
+#   1. Prior 15m candle momentum (25%)
+#   2. Multi-timeframe trend alignment (20%)
+#   3. Short-term 5-min momentum carry (20%)
+#   4. Candle pattern / streak (15%)
+#   5. Volume directional alignment (10%)
+#   6. Volatility regime boost (10%)
+
+[strategy.before_window_open]
+# --- Signal weights (must sum to 1.0) ---
+weight_prior_momentum = 0.25
+weight_multi_tf = 0.20
+weight_short_momentum = 0.20
+weight_candle_pattern = 0.15
+weight_volume = 0.10
+weight_vol_regime = 0.10
+
+# --- Entry parameters ---
+min_confidence = 0.40          # minimum weighted vote to enter
+max_entry_price = 0.60         # don't buy tokens above this price
+entry_minute_end = 3           # latest minute to enter (0-3 = pre/early window)
+
+# --- Ensemble voting ---
+min_vote_weight = 0.40         # minimum total vote weight for conviction
+
+# --- Feature thresholds ---
+mtf_min_alignment = 2.0        # min abs alignment score (2 of 3 TFs agree)
+stm_min_strength = 0.6         # min green/red ratio for short-term momentum
+pattern_min_streak = 3          # min consecutive same-direction candles
+volume_min_alignment = 0.3      # min abs directional volume ratio
+
+# --- Exit parameters ---
+resolution_guard_minute = 14   # force-exit at minute 14
+hold_to_settlement = true      # hold to binary settlement ($0 or $1)
+
+# --- Position sizing ---
+max_position_pct = 0.05        # 5% max position (wider risk for lower entry price)
+
+# --- ML Model Configuration ---
+use_ml_model = false            # enable ML-based signal generation
+model_path = "models/bwo_model_min3.joblib"  # path to trained model
+entry_minute = 3                # which minute to enter (2, 3, 4, or 5)
+ml_confidence_threshold = 0.70  # minimum model confidence to trade
+ml_price_sensitivity = 0.5      # entry price = 0.50 + abs(return) * sensitivity
+ml_max_entry_price = 0.70       # cap entry price for ML mode
+
+# --- Fee model reference ---
+# Polymarket dynamic fee at $0.50: ~$1.56 per $100 position
+# Slippage estimate: 5 bps = $0.50 per $100
+# Total cost: ~$2.06 per $100 = ~2.06%
+# Break-even accuracy: ~52% at $0.50 entry

@@ -18,6 +18,7 @@
 - ALL sizing MUST respect `config.risk.max_position_pct` (default 2%)
 - Paper trade first — use `--paper` flag
 - Log every order attempt, fill, rejection to audit trail
+- **BWO Strategy MUST buy BEFORE the window opens** (minute 0 or earlier). The whole edge is getting $0.50 fair-value entry before the market moves. Entering at minutes 2-5 defeats the purpose — the price has already shifted and the "accuracy" is just base-rate momentum continuation, not a real predictive edge. Never drift the BWO entry into within-window territory.
 
 ## Commands
 ```
