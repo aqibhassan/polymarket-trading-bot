@@ -82,7 +82,8 @@ CLOB_API = "https://clob.polymarket.com"
 
 INITIAL_BANKROLL = 200.0
 POSITION_PCT = 0.50
-MAX_ENTRY_PRICE = 0.70  # 5m prices move fast — allow up to 70c
+MAX_ENTRY_PRICE = 0.90  # Hard cap — EV check below is the real gatekeeper
+MIN_EDGE = 0.03  # Minimum required edge: cont_prob must exceed entry_price + MIN_EDGE
 ENTRY_MINUTE = 2
 CONT_THRESHOLD = 0.75  # From backtest: 86.9% acc at 0.75 threshold
 FEE_CONSTANT = 0.25
@@ -527,8 +528,12 @@ def fetch_clob_orderbook(token_id: str) -> dict[str, Any]:
         log.warning(f"CLOB error: {e}")
         return result
 
-    bids = data.get("bids", [])
-    asks = data.get("asks", [])
+    bids_raw = data.get("bids", [])
+    asks_raw = data.get("asks", [])
+
+    # CLOB API returns bids ascending, asks descending — sort to get best prices
+    bids = sorted(bids_raw, key=lambda x: float(x.get("price", 0)), reverse=True)
+    asks = sorted(asks_raw, key=lambda x: float(x.get("price", 0)))
 
     if bids:
         result["best_bid"] = float(bids[0].get("price", 0))
@@ -760,7 +765,12 @@ def main() -> None:
                                         f"(size={ask_size:.0f})"
                                     )
 
-                                    if ask_price <= MAX_ENTRY_PRICE and ask_size >= 10:
+                                    # EV-based entry: cont_prob must exceed entry_price + MIN_EDGE
+                                    ev_ok = cont_prob > (ask_price + MIN_EDGE)
+                                    price_ok = ask_price <= MAX_ENTRY_PRICE
+                                    depth_ok = ask_size >= 10
+
+                                    if ev_ok and price_ok and depth_ok:
                                         # Paper buy
                                         position_value = bankroll * POSITION_PCT
                                         shares = position_value / ask_price
@@ -772,12 +782,21 @@ def main() -> None:
                                         w.shares = shares
                                         w.fee = fee
 
+                                        expected_ev = cont_prob * (1.0 - ask_price) - (1.0 - cont_prob) * ask_price
                                         log.info(
                                             f"[BUY] {side} {shares:.1f} shares @ ${ask_price:.3f} "
-                                            f"(${position_value:.2f}, fee=${fee:.2f})"
+                                            f"(${position_value:.2f}, fee=${fee:.2f}, "
+                                            f"EV=${expected_ev:.3f}/unit)"
                                         )
                                     else:
-                                        w.skip_reason = f"{side} ask=${ask_price:.3f} too high or no depth"
+                                        reasons = []
+                                        if not ev_ok:
+                                            reasons.append(f"EV: need cont>{ask_price+MIN_EDGE:.2f}, got {cont_prob:.3f}")
+                                        if not price_ok:
+                                            reasons.append(f"price ${ask_price:.3f}>${MAX_ENTRY_PRICE}")
+                                        if not depth_ok:
+                                            reasons.append(f"depth={ask_size:.0f}<10")
+                                        w.skip_reason = f"{side} ask=${ask_price:.3f}: {', '.join(reasons)}"
                                         log.info(f"[SKIP] {w.skip_reason}")
                                 else:
                                     w.skip_reason = f"cont_prob={cont_prob:.3f} < {CONT_THRESHOLD}"

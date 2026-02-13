@@ -99,7 +99,7 @@ CLOB_API = "https://clob.polymarket.com"
 
 INITIAL_BANKROLL = 200.0
 POSITION_PCT = 0.50
-MAX_ENTRY_PRICE = 0.52
+MAX_ENTRY_PRICE = 0.55  # Pre-window asks range $0.49-$0.55 depending on momentum
 ENTRY_MINUTE = 3
 CONT_THRESHOLD = 0.50
 FEE_CONSTANT = 0.25
@@ -566,8 +566,12 @@ def fetch_clob_orderbook(token_id: str) -> dict[str, Any]:
         log.warning(f"CLOB error for {token_id[:20]}: {e}")
         return result
 
-    bids = data.get("bids", [])
-    asks = data.get("asks", [])
+    bids_raw = data.get("bids", [])
+    asks_raw = data.get("asks", [])
+
+    # CLOB API returns bids ascending, asks descending — sort to get best prices
+    bids = sorted(bids_raw, key=lambda x: float(x.get("price", 0)), reverse=True)
+    asks = sorted(asks_raw, key=lambda x: float(x.get("price", 0)))
 
     if bids:
         result["best_bid"] = float(bids[0].get("price", 0))
