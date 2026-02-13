@@ -8,15 +8,15 @@ interface WindowProgressProps {
   entryZoneEnd?: number;
 }
 
-export function WindowProgress({ minute, entryZoneStart = 8, entryZoneEnd = 12 }: WindowProgressProps) {
+export function WindowProgress({ minute, entryZoneStart = 2, entryZoneEnd = 2 }: WindowProgressProps) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm">
         <span className="text-zinc-400">Window Progress</span>
-        <span className="text-zinc-300 font-mono">Minute {minute}/14</span>
+        <span className="text-zinc-300 font-mono">Minute {minute}/4</span>
       </div>
       <div className="flex gap-1">
-        {Array.from({ length: 15 }, (_, i) => (
+        {Array.from({ length: 5 }, (_, i) => (
           <div
             key={i}
             className={cn(
@@ -33,9 +33,10 @@ export function WindowProgress({ minute, entryZoneStart = 8, entryZoneEnd = 12 }
       </div>
       <div className="flex justify-between text-[10px] text-zinc-500">
         <span>0</span>
-        <span>5</span>
-        <span>10</span>
-        <span>14</span>
+        <span>1</span>
+        <span>2</span>
+        <span>3</span>
+        <span>4</span>
       </div>
     </div>
   );

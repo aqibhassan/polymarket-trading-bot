@@ -1,19 +1,14 @@
 import { NextResponse } from 'next/server';
-import { getAdvancedMetrics } from '@/lib/queries/trades';
-import { validStrategy } from '@/lib/validation';
 
-export async function GET(request: Request) {
+const BWO_API = process.env.BWO_API_URL || 'http://localhost:8100';
+
+export async function GET(req: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const strategy = validStrategy(searchParams.get('strategy'));
-    const metrics = await getAdvancedMetrics(strategy);
-    return NextResponse.json(metrics || {});
-  } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch metrics' },
-      { status: 500 },
-    );
+    const { searchParams } = new URL(req.url);
+    const res = await fetch(`${BWO_API}/api/metrics?${searchParams}`);
+    const data = await res.json();
+    return NextResponse.json(data);
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch from data server' }, { status: 502 });
   }
 }
-
-export const dynamic = 'force-dynamic';

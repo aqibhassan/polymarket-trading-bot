@@ -3,50 +3,25 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { StatCard } from '@/components/charts/stat-card';
-import { Badge } from '@/components/ui/badge';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { ErrorBanner } from '@/components/ui/error-banner';
-import type { Trade } from '@/lib/types/trade';
+import type { BWOAdvancedMetrics, BWOTradeRecord } from '@/lib/types/bwo';
 
 export default function RiskPage() {
-  const [killSwitch, setKillSwitch] = useState(false);
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [maxDrawdownPct, setMaxDrawdownPct] = useState(0);
+  const [metrics, setMetrics] = useState<BWOAdvancedMetrics | null>(null);
+  const [trades, setTrades] = useState<BWOTradeRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const [ksRes, trRes, eqRes, balRes] = await Promise.all([
-        fetch('/api/kill-switch'),
+      const [metRes, trRes] = await Promise.all([
+        fetch('/api/metrics'),
         fetch('/api/trades?limit=1000'),
-        fetch('/api/equity-curve'),
-        fetch('/api/balance'),
       ]);
-      const ksData = await ksRes.json();
+      const metData = await metRes.json();
       const trData = await trRes.json();
-      const eqData = await eqRes.json();
-      const balData = await balRes.json();
-      setKillSwitch(ksData.active || false);
+      setMetrics(metData.total_trades != null ? metData : null);
       setTrades(trData.trades || []);
-
-      // Use real initial balance from Redis — no hardcoded fallback
-      const initBal = balData?.initial_balance && Number(balData.initial_balance) > 0
-        ? Number(balData.initial_balance)
-        : 0;
-
-      // Compute peak-to-trough drawdown from ClickHouse equity curve
-      const curve: Array<{ cumulative_pnl: number }> = eqData.data || [];
-      if (initBal > 0 && curve.length > 0) {
-        let peak = initBal;
-        let maxDd = 0;
-        for (const pt of curve) {
-          const equity = initBal + Number(pt.cumulative_pnl);
-          if (equity > peak) peak = equity;
-          const dd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
-          if (dd > maxDd) maxDd = dd;
-        }
-        setMaxDrawdownPct(Number(maxDd.toFixed(2)));
-      }
       setError(null);
     } catch {
       setError('Failed to load risk data');
@@ -59,30 +34,18 @@ export default function RiskPage() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // Calculate max consecutive losses
-  let maxConsecLosses = 0;
-  let currentStreak = 0;
-  for (const t of [...trades].reverse()) {
-    if (t.pnl < 0) {
-      currentStreak++;
-      maxConsecLosses = Math.max(maxConsecLosses, currentStreak);
-    } else {
-      currentStreak = 0;
-    }
-  }
-
-  // Drawdown from ClickHouse equity curve (peak-to-trough, accurate across restarts)
-  const drawdownLimit = 5; // 5% max daily drawdown
-
-  // Total fees from ClickHouse trades (numeric coercion done in query layer)
-  const totalFees = trades.reduce((s, t) => s + (t.fee_cost || 0), 0);
+  const maxConsecLosses = metrics?.max_consec_losses ?? 0;
+  const maxDrawdownPct = metrics?.max_drawdown_pct ?? 0;
+  const totalFees = metrics?.total_fees ?? 0;
+  const drawdownLimit = 5;
 
   // Daily fees from trades
   const dailyFeeMap = new Map<string, number>();
   for (const t of trades) {
-    const day = (t.entry_time || '').split(/[T ]/)[0];
+    if (!t.entered) continue;
+    const day = (t.window_ts || '').split(/[T ]/)[0];
     if (!day) continue;
-    dailyFeeMap.set(day, (dailyFeeMap.get(day) || 0) + (t.fee_cost || 0));
+    dailyFeeMap.set(day, (dailyFeeMap.get(day) || 0) + (t.fee || 0));
   }
   const feeData = Array.from(dailyFeeMap.entries())
     .map(([date, fees]) => ({ date, fees: Number(fees.toFixed(4)) }))
@@ -93,34 +56,15 @@ export default function RiskPage() {
       <h1 className="text-xl md:text-2xl font-bold text-zinc-50">Risk Monitor</h1>
       {error && <ErrorBanner message={error} onRetry={fetchData} />}
 
-      {/* Kill Switch Status */}
-      <Card>
-        <CardContent className="p-8">
-          <div className="flex items-center gap-6">
-            <div className={`h-16 w-16 rounded-full flex items-center justify-center ${killSwitch ? 'bg-red-500/20 ring-4 ring-red-500/50' : 'bg-emerald-500/20 ring-4 ring-emerald-500/50'}`}>
-              <div className={`h-8 w-8 rounded-full ${killSwitch ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-zinc-50">
-                Kill Switch: {killSwitch ? 'ACTIVE' : 'Inactive'}
-              </h2>
-              <p className="text-sm text-zinc-400">
-                {killSwitch
-                  ? 'Trading halted — daily drawdown limit breached'
-                  : 'System operating normally within risk parameters'}
-              </p>
-            </div>
-            <Badge variant={killSwitch ? 'destructive' : 'success'} className="ml-auto text-sm px-4 py-1">
-              {killSwitch ? 'HALTED' : 'SAFE'}
-            </Badge>
-          </div>
-        </CardContent>
-      </Card>
-
       {/* Risk Stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard title="Max Consecutive Losses" value={maxConsecLosses} />
-        <StatCard title="Max Drawdown" value={`${maxDrawdownPct}%`} subtitle={`of ${drawdownLimit}% limit`} trend={maxDrawdownPct > 2 ? 'down' : 'neutral'} />
+        <StatCard
+          title="Max Drawdown"
+          value={`${maxDrawdownPct.toFixed(2)}%`}
+          subtitle={`of ${drawdownLimit}% limit`}
+          trend={maxDrawdownPct > 2 ? 'down' : 'neutral'}
+        />
         <StatCard title="Total Fees Paid" value={`$${totalFees.toFixed(2)}`} />
       </div>
 
@@ -132,7 +76,7 @@ export default function RiskPage() {
         <CardContent>
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
-              <span className="text-zinc-400">Peak-to-Trough: {maxDrawdownPct}%</span>
+              <span className="text-zinc-400">Peak-to-Trough: {maxDrawdownPct.toFixed(2)}%</span>
               <span className="text-zinc-400">Limit: {drawdownLimit}%</span>
             </div>
             <div className="h-4 w-full rounded-full bg-zinc-800 overflow-hidden">

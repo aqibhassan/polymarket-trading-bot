@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import type { Trade } from '@/lib/types/trade';
+import type { BWOTradeRecord } from '@/lib/types/bwo';
 
-export function useTrades(limit: number = 10, refreshInterval: number = 10000) {
-  const [trades, setTrades] = useState<Trade[]>([]);
+export function useBwoTrades(limit = 20, refreshInterval = 10000) {
+  const [trades, setTrades] = useState<BWOTradeRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -16,7 +16,9 @@ export function useTrades(limit: number = 10, refreshInterval: number = 10000) {
       const data = await res.json();
       setTrades(data.trades || []);
       setTotal(data.total ?? 0);
-    } catch { /* fetch failed */ } finally {
+    } catch {
+      /* fetch failed */
+    } finally {
       setLoading(false);
     }
   }, [limit, page]);

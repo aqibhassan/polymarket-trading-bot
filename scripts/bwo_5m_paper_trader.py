@@ -81,11 +81,13 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
 
 INITIAL_BANKROLL = 200.0
-POSITION_PCT = 0.50
+POSITION_PCT = 0.30  # Reduced from 0.50 — limits max single loss
 MAX_ENTRY_PRICE = 0.90  # Hard cap — EV check below is the real gatekeeper
+MIN_ENTRY_PRICE = 0.65  # Floor — $0.60-0.65 entries had 50% WR (death zone)
 MIN_EDGE = 0.03  # Minimum required edge: cont_prob must exceed entry_price + MIN_EDGE
+MIN_BTC_RETURN = 0.0003  # 0.03% — skip noise moves
 ENTRY_MINUTE = 2
-CONT_THRESHOLD = 0.75  # From backtest: 86.9% acc at 0.75 threshold
+CONT_THRESHOLD = 0.80  # Raised from 0.75 — 0.75-0.80 bucket had -$517 PnL
 FEE_CONSTANT = 0.25
 POLL_INTERVAL = 5  # 5s for 5m windows (faster than 15m)
 WINDOW_SECONDS = 300  # 5 minutes
@@ -617,7 +619,7 @@ class Window5mTracker:
 def main() -> None:
     log.info("=" * 70)
     log.info("BWO 5-MINUTE PAPER TRADER — Continuation at Minute 2")
-    log.info(f"Threshold={CONT_THRESHOLD}, MaxEntry=${MAX_ENTRY_PRICE}")
+    log.info(f"Threshold={CONT_THRESHOLD}, Price=[${MIN_ENTRY_PRICE}-${MAX_ENTRY_PRICE}], Position={POSITION_PCT*100:.0f}%, MinRet={MIN_BTC_RETURN*100:.2f}%")
     log.info("=" * 70)
 
     # Train or load model
@@ -716,10 +718,10 @@ def main() -> None:
                         w.btc_direction = "UP" if btc_return > 0 else ("DOWN" if btc_return < 0 else "FLAT")
                         w.early_direction = 1.0 if btc_return > 0 else (-1.0 if btc_return < 0 else 0.0)
 
-                        if w.early_direction == 0.0:
-                            w.skip_reason = "flat early return"
+                        if abs(btc_return) < MIN_BTC_RETURN:
+                            w.skip_reason = f"noise: |ret|={abs(btc_return)*100:.4f}%<{MIN_BTC_RETURN*100:.2f}%"
                             w.decision_done = True
-                            log.info(f"[SKIP] Flat BTC at minute 2")
+                            log.info(f"[SKIP] {w.skip_reason}")
                         else:
                             # Compute features
                             ci = None
@@ -767,7 +769,7 @@ def main() -> None:
 
                                     # EV-based entry: cont_prob must exceed entry_price + MIN_EDGE
                                     ev_ok = cont_prob > (ask_price + MIN_EDGE)
-                                    price_ok = ask_price <= MAX_ENTRY_PRICE
+                                    price_ok = ask_price >= MIN_ENTRY_PRICE and ask_price <= MAX_ENTRY_PRICE
                                     depth_ok = ask_size >= 5  # Paper trading: relaxed depth
 
                                     if ev_ok and price_ok and depth_ok:
@@ -793,7 +795,10 @@ def main() -> None:
                                         if not ev_ok:
                                             reasons.append(f"EV: need cont>{ask_price+MIN_EDGE:.2f}, got {cont_prob:.3f}")
                                         if not price_ok:
-                                            reasons.append(f"price ${ask_price:.3f}>${MAX_ENTRY_PRICE}")
+                                            if ask_price < MIN_ENTRY_PRICE:
+                                                reasons.append(f"price ${ask_price:.3f}<${MIN_ENTRY_PRICE}")
+                                            else:
+                                                reasons.append(f"price ${ask_price:.3f}>${MAX_ENTRY_PRICE}")
                                         if not depth_ok:
                                             reasons.append(f"depth={ask_size:.0f}<10")
                                         w.skip_reason = f"{side} ask=${ask_price:.3f}: {', '.join(reasons)}"

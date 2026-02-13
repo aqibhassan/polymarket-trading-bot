@@ -1,11 +1,11 @@
 'use client';
 
 import { StatCard } from '@/components/charts/stat-card';
-import type { AdvancedMetrics } from '@/lib/types/trade';
-import { Activity, TrendingUp, TrendingDown, BarChart3, Clock, Target, Layers, Zap } from 'lucide-react';
+import type { BWOAdvancedMetrics } from '@/lib/types/bwo';
+import { Activity, TrendingUp, TrendingDown, BarChart3, Target, Layers, Zap, DollarSign } from 'lucide-react';
 
 interface MetricsGridProps {
-  metrics: AdvancedMetrics | null;
+  metrics: BWOAdvancedMetrics | null;
 }
 
 /** Safe toFixed that handles null/undefined/NaN. */
@@ -24,7 +24,8 @@ export function MetricsGrid({ metrics }: MetricsGridProps) {
   const sharpe = metrics.sharpe_ratio ?? 0;
   const sortino = metrics.sortino_ratio ?? 0;
   const maxDd = metrics.max_drawdown_pct ?? 0;
-  const holdTime = metrics.avg_hold_time_minutes ?? 0;
+  const maxConsec = metrics.max_consec_losses ?? 0;
+  const totalFees = metrics.total_fees ?? 0;
   const exp = metrics.expectancy ?? 0;
   const tpd = metrics.avg_trades_per_day ?? 0;
 
@@ -55,9 +56,9 @@ export function MetricsGrid({ metrics }: MetricsGridProps) {
         icon={<TrendingDown className="h-4 w-4" />}
       />
       <StatCard
-        title="Avg Hold Time"
-        value={`${safe(holdTime, 1)}m`}
-        icon={<Clock className="h-4 w-4" />}
+        title="Max Consec Losses"
+        value={maxConsec}
+        icon={<TrendingDown className="h-4 w-4" />}
       />
       <StatCard
         title="Expectancy"
@@ -66,9 +67,9 @@ export function MetricsGrid({ metrics }: MetricsGridProps) {
         icon={<Target className="h-4 w-4" />}
       />
       <StatCard
-        title="Total Trades"
-        value={metrics.total_trades}
-        icon={<Layers className="h-4 w-4" />}
+        title="Total Fees"
+        value={`$${safe(totalFees)}`}
+        icon={<DollarSign className="h-4 w-4" />}
       />
       <StatCard
         title="Avg Trades/Day"

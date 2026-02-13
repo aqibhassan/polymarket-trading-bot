@@ -39,8 +39,8 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
       <div className="w-full max-w-sm space-y-8">
         <div className="text-center">
-          <h1 className="text-emerald-500 font-bold text-3xl tracking-tight">MVHE</h1>
-          <p className="text-zinc-500 text-sm mt-2">Micro-Volatility Harvesting Engine</p>
+          <h1 className="text-emerald-500 font-bold text-3xl tracking-tight">BWO</h1>
+          <p className="text-zinc-500 text-sm mt-2">5m Paper Trader Dashboard</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

@@ -1,16 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getEquityCurve } from '@/lib/queries/trades';
-import { validStrategyOrUndefined } from '@/lib/validation';
+import { NextResponse } from 'next/server';
 
-export async function GET(request: NextRequest) {
+const BWO_API = process.env.BWO_API_URL || 'http://localhost:8100';
+
+export async function GET(req: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const strategy = validStrategyOrUndefined(searchParams.get('strategy'));
-    const data = await getEquityCurve(strategy);
-    return NextResponse.json({ data });
+    const { searchParams } = new URL(req.url);
+    const res = await fetch(`${BWO_API}/api/equity-curve?${searchParams}`);
+    const data = await res.json();
+    return NextResponse.json(data);
   } catch {
-    return NextResponse.json({ error: 'Failed to fetch equity curve' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to fetch from data server' }, { status: 502 });
   }
 }
-
-export const dynamic = 'force-dynamic';
