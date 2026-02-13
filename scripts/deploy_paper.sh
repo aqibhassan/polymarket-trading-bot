@@ -54,7 +54,8 @@ Type=simple
 User=root
 WorkingDirectory=/opt/bwo-paper
 Environment=PYTHONPATH=/opt/bwo-paper
-ExecStart=/opt/bwo-paper/venv/bin/python3 scripts/bwo_paper_trader.py
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/bwo-paper/venv/bin/python3 -u scripts/bwo_paper_trader.py
 Restart=always
 RestartSec=30
 StandardOutput=append:/opt/bwo-paper/logs/15m_console.log
@@ -75,7 +76,8 @@ Type=simple
 User=root
 WorkingDirectory=/opt/bwo-paper
 Environment=PYTHONPATH=/opt/bwo-paper
-ExecStart=/opt/bwo-paper/venv/bin/python3 scripts/bwo_5m_paper_trader.py
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/bwo-paper/venv/bin/python3 -u scripts/bwo_5m_paper_trader.py
 Restart=always
 RestartSec=30
 StandardOutput=append:/opt/bwo-paper/logs/5m_console.log
