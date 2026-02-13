@@ -44,9 +44,13 @@ class EdgeCalculator:
         self,
         min_edge: float = 0.03,
         fee_constant: float = 0.25,
+        dynamic_min_edge_enabled: bool = False,
+        uncertainty_penalty_scale: float = 0.03,
     ) -> None:
         self._min_edge = min_edge
         self._fee_constant = fee_constant
+        self._dynamic_min_edge_enabled = dynamic_min_edge_enabled
+        self._uncertainty_penalty_scale = uncertainty_penalty_scale
 
     @property
     def min_edge(self) -> float:
@@ -55,6 +59,19 @@ class EdgeCalculator:
     @property
     def fee_constant(self) -> float:
         return self._fee_constant
+
+    def _effective_min_edge(self, clob_mid: float) -> float:
+        """Compute effective min edge, optionally scaled by market uncertainty.
+
+        At clob_mid=0.50 (max uncertainty), penalty is full scale.
+        At extremes (0.20 or 0.80), penalty is much smaller.
+
+        Formula: base + scale * max(0, 1 - 2*|clob_mid - 0.50|)
+        """
+        if not self._dynamic_min_edge_enabled:
+            return self._min_edge
+        uncertainty = max(0.0, 1.0 - 2.0 * abs(clob_mid - 0.50))
+        return self._min_edge + self._uncertainty_penalty_scale * uncertainty
 
     def polymarket_fee(self, price: float) -> float:
         """Compute the Polymarket fee for a given price.
@@ -89,7 +106,10 @@ class EdgeCalculator:
         # Fee is a rate on notional (shares * price), so per-share fee cost
         # is fee_rate * entry_price.  Deduct that from the per-share edge.
         fee_adjusted_edge = raw_edge - fee * entry_price
-        is_tradeable = fee_adjusted_edge >= self._min_edge
+
+        # Dynamic min edge: scale with market uncertainty (distance from 0.50)
+        effective_min_edge = self._effective_min_edge(clob_mid)
+        is_tradeable = fee_adjusted_edge >= effective_min_edge
 
         logger.debug(
             "edge_calculated",
@@ -99,6 +119,7 @@ class EdgeCalculator:
             raw_edge=round(raw_edge, 4),
             fee=round(fee, 6),
             fee_adjusted_edge=round(fee_adjusted_edge, 4),
+            min_edge=round(effective_min_edge, 4),
             is_tradeable=is_tradeable,
         )
 
@@ -110,5 +131,5 @@ class EdgeCalculator:
             fee=fee,
             fee_adjusted_edge=fee_adjusted_edge,
             is_tradeable=is_tradeable,
-            min_edge=self._min_edge,
+            min_edge=effective_min_edge,
         )

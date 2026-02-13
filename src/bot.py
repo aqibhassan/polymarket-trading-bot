@@ -337,6 +337,44 @@ class BotOrchestrator:
         return Decimal(str(config.get("price_ladder_offset_min2", 0.00)))
 
     @staticmethod
+    def _check_clob_stability(
+        history: list[Decimal],
+        max_range: Decimal,
+        min_samples: int,
+    ) -> tuple[bool, str]:
+        """Check whether CLOB midpoint has been stable within the window.
+
+        Returns:
+            (is_stable, reason): True when CLOB is stable enough for entry.
+        """
+        if len(history) < min_samples:
+            return True, f"insufficient_samples({len(history)}<{min_samples})"
+        mid_range = max(history) - min(history)
+        if mid_range > max_range:
+            return False, f"range={mid_range:.4f}>{max_range}"
+        return True, f"range={mid_range:.4f}"
+
+    @staticmethod
+    def _check_coin_flip_zone(
+        cal_mid: float,
+        half_width: float,
+        edge: float,
+        override_edge: float,
+    ) -> tuple[bool, str]:
+        """Check whether the market is in the coin-flip zone.
+
+        Returns:
+            (should_trade, reason): False when in coin-flip zone without
+            sufficient edge to override.
+        """
+        dist = abs(cal_mid - 0.50)
+        if dist >= half_width:
+            return True, f"outside_zone(dist={dist:.4f})"
+        if edge >= override_edge:
+            return True, f"override(edge={edge:.4f}>={override_edge})"
+        return False, f"coin_flip(mid={cal_mid:.4f},edge={edge:.4f})"
+
+    @staticmethod
     def _window_start_ts(epoch_s: int) -> int:
         """Align an epoch timestamp to the enclosing 15-minute boundary."""
         return epoch_s - (epoch_s % 900)
@@ -732,6 +770,36 @@ class BotOrchestrator:
             self._config.get("calibration.fee_constant", 0.25)
         )
 
+        # --- CLOB stability config ---
+        clob_stability_enabled = bool(
+            self._config.get("calibration.clob_stability_enabled", True)
+        )
+        clob_stability_max_range = Decimal(
+            str(self._config.get("calibration.clob_stability_max_range", 0.20))
+        )
+        clob_stability_min_samples = int(
+            self._config.get("calibration.clob_stability_min_samples", 3)
+        )
+
+        # --- Coin-flip zone config ---
+        coin_flip_skip_enabled = bool(
+            self._config.get("calibration.coin_flip_skip_enabled", True)
+        )
+        coin_flip_half_width = float(
+            self._config.get("calibration.coin_flip_half_width", 0.08)
+        )
+        coin_flip_override_edge = float(
+            self._config.get("calibration.coin_flip_override_edge", 0.10)
+        )
+
+        # --- Dynamic min edge config ---
+        dynamic_min_edge_enabled = bool(
+            self._config.get("calibration.dynamic_min_edge_enabled", True)
+        )
+        uncertainty_penalty_scale = float(
+            self._config.get("calibration.uncertainty_penalty_scale", 0.03)
+        )
+
         # --- Validation config ---
         validation_enabled = bool(
             self._config.get("validation.enabled", False)
@@ -764,6 +832,8 @@ class BotOrchestrator:
             edge_calc = EdgeCalculator(
                 min_edge=calibration_min_edge,
                 fee_constant=calibration_fee_constant,
+                dynamic_min_edge_enabled=dynamic_min_edge_enabled,
+                uncertainty_penalty_scale=uncertainty_penalty_scale,
             )
             logger.info(
                 "calibration_enabled",
@@ -1108,6 +1178,7 @@ class BotOrchestrator:
         pending_gtc_token_id: str | None = None  # Token ID of resting GTC for reactive sweep
         window_activity_published = False  # one event per 15-min window
         window_last_skip_eval: dict[str, Any] = {}  # accumulate last skip reason
+        clob_mid_history: list[Decimal] = []  # CLOB midpoint samples within window
 
         # Recover orphaned position from Redis (survives Docker restart)
         recovered_pos = await self._load_position(redis_conn)
@@ -1508,6 +1579,7 @@ class BotOrchestrator:
                     window_activity_published = False
                     window_last_skip_eval = {}
                     last_clob_snapshot_minute = -1
+                    clob_mid_history = []
                     # Unsubscribe from old tokens at window boundary
                     for _old_tok in (current_subscribed_yes, current_subscribed_no):
                         if _old_tok:
@@ -1844,6 +1916,10 @@ class BotOrchestrator:
 
                         if _no_trade_age < clob_last_trade_freshness:
                             no_clob_last_trade = no_clob_state.last_trade_price
+
+                # Track CLOB midpoint history for stability check
+                if clob_midpoint is not None:
+                    clob_mid_history.append(clob_midpoint)
 
                 # Log CLOB vs sigmoid comparison every tick
                 if clob_best_ask is not None:
@@ -2385,6 +2461,22 @@ class BotOrchestrator:
                             order_type=order_type_selected.value,
                         )
 
+                        # --- CLOB stability gate ---
+                        if clob_stability_enabled:
+                            _stable, _stab_reason = self._check_clob_stability(
+                                clob_mid_history,
+                                clob_stability_max_range,
+                                clob_stability_min_samples,
+                            )
+                            if not _stable:
+                                logger.info(
+                                    "clob_stability_skip",
+                                    reason=_stab_reason,
+                                    samples=len(clob_mid_history),
+                                    minute=minute_in_window,
+                                )
+                                continue
+
                         # Safety gate: reject entries where CLOB price is too high.
                         # FOK taker has a more permissive limit (pays more for guaranteed fill).
                         # Confidence-adaptive: high-confidence signals can buy at higher prices.
@@ -2466,6 +2558,25 @@ class BotOrchestrator:
                                         clob_mid=round(_cal_mid, 4),
                                     )
                                     continue
+
+                                # --- Coin-flip zone gate ---
+                                if coin_flip_skip_enabled:
+                                    _cf_ok, _cf_reason = self._check_coin_flip_zone(
+                                        _cal_mid,
+                                        coin_flip_half_width,
+                                        edge_result.fee_adjusted_edge,
+                                        coin_flip_override_edge,
+                                    )
+                                    if not _cf_ok:
+                                        logger.info(
+                                            "coin_flip_zone_skip",
+                                            reason=_cf_reason,
+                                            cal_mid=round(_cal_mid, 4),
+                                            edge=round(edge_result.fee_adjusted_edge, 4),
+                                            minute=minute_in_window,
+                                        )
+                                        continue
+
                                 effective_win_prob = Decimal(str(round(cal_result.posterior, 4)))
                                 logger.info(
                                     "calibrated_win_prob",

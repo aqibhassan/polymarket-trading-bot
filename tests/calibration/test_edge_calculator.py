@@ -157,3 +157,72 @@ class TestEdgeCalculation:
         )
         with pytest.raises(AttributeError):
             result.posterior = 0.80  # type: ignore[misc]
+
+
+class TestDynamicMinEdge:
+    """Tests for dynamic min edge scaling with market uncertainty."""
+
+    def test_disabled_uses_base(self) -> None:
+        """When disabled, min_edge is always the base value."""
+        ec = EdgeCalculator(min_edge=0.03, dynamic_min_edge_enabled=False)
+        result = ec.calculate(posterior=0.60, entry_price=0.50, clob_mid=0.50)
+        assert result.min_edge == pytest.approx(0.03, abs=1e-6)
+
+    def test_at_050_max_penalty(self) -> None:
+        """At clob_mid=0.50, penalty is full scale (uncertainty=1.0)."""
+        ec = EdgeCalculator(
+            min_edge=0.03, dynamic_min_edge_enabled=True,
+            uncertainty_penalty_scale=0.03,
+        )
+        result = ec.calculate(posterior=0.60, entry_price=0.50, clob_mid=0.50)
+        # 0.03 + 0.03 * 1.0 = 0.06
+        assert result.min_edge == pytest.approx(0.06, abs=1e-6)
+
+    def test_at_030_partial_penalty(self) -> None:
+        """At clob_mid=0.30, uncertainty is partial."""
+        ec = EdgeCalculator(
+            min_edge=0.03, dynamic_min_edge_enabled=True,
+            uncertainty_penalty_scale=0.03,
+        )
+        result = ec.calculate(posterior=0.60, entry_price=0.30, clob_mid=0.30)
+        # uncertainty = max(0, 1 - 2*|0.30 - 0.50|) = max(0, 1 - 0.40) = 0.60
+        # effective = 0.03 + 0.03 * 0.60 = 0.048
+        assert result.min_edge == pytest.approx(0.048, abs=1e-6)
+
+    def test_at_080_small_penalty(self) -> None:
+        """At clob_mid=0.80, penalty is small (far from 0.50)."""
+        ec = EdgeCalculator(
+            min_edge=0.03, dynamic_min_edge_enabled=True,
+            uncertainty_penalty_scale=0.03,
+        )
+        result = ec.calculate(posterior=0.90, entry_price=0.80, clob_mid=0.80)
+        # uncertainty = max(0, 1 - 2*0.30) = 0.40
+        # effective = 0.03 + 0.03 * 0.40 = 0.042
+        assert result.min_edge == pytest.approx(0.042, abs=1e-6)
+
+    def test_at_extreme_zero_penalty(self) -> None:
+        """At clob_mid=0.0 or 1.0, penalty is zero (uncertainty clamped)."""
+        ec = EdgeCalculator(
+            min_edge=0.03, dynamic_min_edge_enabled=True,
+            uncertainty_penalty_scale=0.03,
+        )
+        result = ec.calculate(posterior=0.10, entry_price=0.05, clob_mid=0.0)
+        # uncertainty = max(0, 1 - 2*0.50) = 0.0
+        assert result.min_edge == pytest.approx(0.03, abs=1e-6)
+
+    def test_dynamic_rejects_thin_edge_at_050(self) -> None:
+        """Trade passes static min_edge but fails dynamic at mid=0.50."""
+        # With static 0.03 this would pass, with dynamic 0.06 it fails
+        ec = EdgeCalculator(
+            min_edge=0.03, dynamic_min_edge_enabled=True,
+            uncertainty_penalty_scale=0.03,
+        )
+        # posterior=0.55, entry=0.50: raw_edge=0.05
+        # fee at 0.50 = 0.015625; fee_cost = 0.015625*0.50 = 0.0078
+        # adjusted = 0.05 - 0.0078 = 0.0422 < 0.06 → not tradeable
+        result = ec.calculate(posterior=0.55, entry_price=0.50, clob_mid=0.50)
+        assert result.is_tradeable is False
+        # Same params with dynamic off would pass
+        ec_static = EdgeCalculator(min_edge=0.03, dynamic_min_edge_enabled=False)
+        result_static = ec_static.calculate(posterior=0.55, entry_price=0.50, clob_mid=0.50)
+        assert result_static.is_tradeable is True

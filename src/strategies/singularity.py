@@ -82,6 +82,14 @@ class SingularityStrategy(BaseStrategy):
             config.get("strategy.singularity.contrarian_threshold_pct", 0.0)
         )
 
+        # --- Momentum veto ---
+        self._momentum_veto_enabled = bool(
+            config.get("strategy.singularity.momentum_veto_enabled", True)
+        )
+        self._momentum_veto_min_strength = float(
+            config.get("strategy.singularity.momentum_veto_min_strength", 0.15)
+        )
+
         # --- Momentum thresholds (tiered by minute) ---
         raw_tiers = config.get("strategy.singularity.entry_tiers", None)
         if raw_tiers and isinstance(raw_tiers, list):
@@ -309,6 +317,31 @@ class SingularityStrategy(BaseStrategy):
                     "vote_details": _vote_results,
                 }
                 return signals
+
+        # --- Momentum veto: momentum actively disagrees with majority ---
+        if (
+            self._momentum_veto_enabled
+            and momentum_vote is not None
+            and momentum_vote.direction != "neutral"
+            and momentum_vote.direction != direction_str
+            and momentum_vote.strength >= self._momentum_veto_min_strength
+        ):
+            logger.info(
+                "singularity_momentum_veto",
+                market_id=market_id,
+                direction=direction_str,
+                momentum_direction=momentum_vote.direction,
+                momentum_strength=round(momentum_vote.strength, 4),
+                veto_threshold=self._momentum_veto_min_strength,
+            )
+            self._last_evaluation = {
+                "outcome": "skip", "reason": "momentum_veto",
+                "minute": minute_in_window, "market_id": market_id,
+                "direction": direction_str,
+                "detail": f"momentum={momentum_vote.direction}({momentum_vote.strength:.4f}) vetoes {direction_str}",
+                "vote_details": _vote_results,
+            }
+            return signals
 
         # --- Compute weighted confidence ---
         total_weight = sum(v.weight for v in agreeing_votes)

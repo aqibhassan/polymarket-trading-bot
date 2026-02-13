@@ -1025,3 +1025,91 @@ class TestFOKInvertedAskFallback:
         assert price == Decimal("0.99")
         assert price > fok_max_entry_price  # Would be correctly REJECTED
         assert source == "no_clob_best_ask_fok"
+
+
+class TestCLOBStability:
+    """Tests for _check_clob_stability static helper."""
+
+    def test_stable_within_range(self) -> None:
+        """All midpoints within max_range → stable."""
+        history = [Decimal("0.50"), Decimal("0.52"), Decimal("0.51")]
+        ok, reason = BotOrchestrator._check_clob_stability(
+            history, max_range=Decimal("0.20"), min_samples=3,
+        )
+        assert ok is True
+        assert "range=" in reason
+
+    def test_unstable_exceeds_range(self) -> None:
+        """Midpoints swing beyond max_range → unstable."""
+        history = [Decimal("0.23"), Decimal("0.10"), Decimal("0.38"), Decimal("0.51")]
+        ok, reason = BotOrchestrator._check_clob_stability(
+            history, max_range=Decimal("0.20"), min_samples=3,
+        )
+        assert ok is False
+        assert "range=" in reason
+
+    def test_insufficient_samples_passes(self) -> None:
+        """Fewer than min_samples → always passes (insufficient data)."""
+        history = [Decimal("0.10"), Decimal("0.90")]
+        ok, reason = BotOrchestrator._check_clob_stability(
+            history, max_range=Decimal("0.20"), min_samples=3,
+        )
+        assert ok is True
+        assert "insufficient_samples" in reason
+
+    def test_empty_history_passes(self) -> None:
+        """Empty history → always passes."""
+        ok, reason = BotOrchestrator._check_clob_stability(
+            [], max_range=Decimal("0.20"), min_samples=3,
+        )
+        assert ok is True
+
+    def test_exact_range_passes(self) -> None:
+        """Range exactly equal to max → passes (not strictly greater)."""
+        history = [Decimal("0.40"), Decimal("0.50"), Decimal("0.60")]
+        ok, reason = BotOrchestrator._check_clob_stability(
+            history, max_range=Decimal("0.20"), min_samples=3,
+        )
+        assert ok is True
+
+
+class TestCoinFlipZone:
+    """Tests for _check_coin_flip_zone static helper."""
+
+    def test_outside_zone_passes(self) -> None:
+        """Mid far from 0.50 → outside zone → trade allowed."""
+        ok, reason = BotOrchestrator._check_coin_flip_zone(
+            cal_mid=0.70, half_width=0.08, edge=0.04, override_edge=0.10,
+        )
+        assert ok is True
+        assert "outside_zone" in reason
+
+    def test_in_zone_low_edge_blocks(self) -> None:
+        """Mid near 0.50, low edge → blocked."""
+        ok, reason = BotOrchestrator._check_coin_flip_zone(
+            cal_mid=0.505, half_width=0.08, edge=0.04, override_edge=0.10,
+        )
+        assert ok is False
+        assert "coin_flip" in reason
+
+    def test_in_zone_high_edge_overrides(self) -> None:
+        """Mid near 0.50, but high edge → override passes."""
+        ok, reason = BotOrchestrator._check_coin_flip_zone(
+            cal_mid=0.505, half_width=0.08, edge=0.12, override_edge=0.10,
+        )
+        assert ok is True
+        assert "override" in reason
+
+    def test_boundary_passes(self) -> None:
+        """Exactly at boundary (dist == half_width) → outside zone."""
+        ok, reason = BotOrchestrator._check_coin_flip_zone(
+            cal_mid=0.42, half_width=0.08, edge=0.01, override_edge=0.10,
+        )
+        assert ok is True
+
+    def test_exact_override_edge_passes(self) -> None:
+        """Edge exactly equal to override_edge → passes."""
+        ok, reason = BotOrchestrator._check_coin_flip_zone(
+            cal_mid=0.50, half_width=0.08, edge=0.10, override_edge=0.10,
+        )
+        assert ok is True

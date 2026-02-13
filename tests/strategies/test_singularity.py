@@ -358,3 +358,254 @@ class TestSingularityStrategy:
         # Should still work (momentum-only, but won't reach min_signals_agree=3)
         assert strat._ofi_analyzer is None
         assert strat._futures_detector is None
+
+
+class TestMomentumVeto:
+    """Tests for momentum veto gate."""
+
+    def _make_config(self, veto_enabled: bool = True, veto_strength: float = 0.15) -> MagicMock:
+        config = MagicMock()
+        defaults: dict[str, object] = {
+            "strategy.singularity.weight_momentum": 0.40,
+            "strategy.singularity.weight_ofi": 0.25,
+            "strategy.singularity.weight_futures": 0.15,
+            "strategy.singularity.weight_vol": 0.10,
+            "strategy.singularity.weight_time": 0.10,
+            "strategy.singularity.min_signals_agree": 2,
+            "strategy.singularity.min_confidence": 0.30,
+            "strategy.singularity.entry_minute_start": 6,
+            "strategy.singularity.entry_minute_end": 10,
+            "strategy.singularity.entry_tiers": [
+                {"minute": 8, "threshold_pct": 0.05},
+            ],
+            "strategy.singularity.resolution_guard_minute": 12,
+            "strategy.singularity.exit_reversal_count": 2,
+            "strategy.singularity.max_position_pct": 0.035,
+            "strategy.singularity.stop_loss_pct": 1.00,
+            "strategy.singularity.profit_target_pct": 0.40,
+            "strategy.singularity.skip_contrarian": False,
+            "strategy.singularity.contrarian_threshold_pct": 0.0,
+            "strategy.singularity.momentum_veto_enabled": veto_enabled,
+            "strategy.singularity.momentum_veto_min_strength": veto_strength,
+        }
+
+        def side_effect(key: str, default: object = None) -> object:
+            return defaults.get(key, default)
+
+        config.get.side_effect = side_effect
+        config.validate_keys.return_value = None
+        return config
+
+    def _make_candle(self, close: float, open_: float = 100000.0):
+        from src.models.market import Candle
+        return Candle(
+            exchange="binance",
+            symbol="BTCUSDT",
+            open=Decimal(str(open_)),
+            high=Decimal(str(max(open_, close))),
+            low=Decimal(str(min(open_, close))),
+            close=Decimal(str(close)),
+            volume=Decimal("100"),
+            timestamp=datetime.now(tz=UTC),
+            interval="1m",
+        )
+
+    def _bullish_ob(self) -> OrderBookSnapshot:
+        return OrderBookSnapshot(
+            timestamp=datetime.now(tz=UTC),
+            market_id="test",
+            bids=[
+                OrderBookLevel(price=Decimal("0.60"), size=Decimal("500")),
+                OrderBookLevel(price=Decimal("0.59"), size=Decimal("400")),
+            ],
+            asks=[
+                OrderBookLevel(price=Decimal("0.61"), size=Decimal("50")),
+                OrderBookLevel(price=Decimal("0.62"), size=Decimal("40")),
+            ],
+        )
+
+    def test_veto_blocks_entry(self) -> None:
+        """Momentum disagrees with majority → veto blocks entry."""
+        from src.strategies.singularity import SingularityStrategy
+
+        config = self._make_config(veto_enabled=True, veto_strength=0.15)
+        strat = SingularityStrategy(config=config)
+        strat._ofi_analyzer = None
+        strat._futures_detector = None
+        strat._tick_tracker = None
+        strat._vol_detector = None
+        strat._time_analyzer = None
+
+        # BTC dropped (momentum=NO), but we inject OFI to force YES majority
+        # by mocking _vote_ofi to return YES
+        from src.strategies.singularity import _SignalVote
+        orig_ofi = strat._vote_ofi
+        strat._vote_ofi = lambda ob, ctx: _SignalVote("ofi", "YES", 0.8, 0.25)
+        # Also mock time_of_day to get another YES vote
+        strat._vote_time_of_day = lambda: _SignalVote("time_of_day", "YES", 0.9, 0.10)
+
+        # BTC -0.20% → momentum votes NO with strength > 0.15
+        candles = [self._make_candle(close=99800.0)]
+        context = {
+            "candles_1m": candles,
+            "window_open_price": 100000.0,
+            "minute_in_window": 8,
+            "yes_price": 0.55,
+        }
+        signals = strat.generate_signals(
+            _market_state(yes_price=0.55), self._bullish_ob(), context,
+        )
+        entry_signals = [s for s in signals if s.signal_type == SignalType.ENTRY]
+        assert len(entry_signals) == 0
+        assert strat._last_evaluation.get("reason") == "momentum_veto"
+
+    def test_veto_disabled_allows_entry(self) -> None:
+        """When veto is disabled, momentum disagreement doesn't block."""
+        from src.strategies.singularity import SingularityStrategy, _SignalVote
+
+        config = self._make_config(veto_enabled=False)
+        strat = SingularityStrategy(config=config)
+        strat._ofi_analyzer = None
+        strat._futures_detector = None
+        strat._tick_tracker = None
+        strat._vol_detector = None
+        strat._time_analyzer = None
+
+        strat._vote_ofi = lambda ob, ctx: _SignalVote("ofi", "YES", 0.8, 0.25)
+        strat._vote_time_of_day = lambda: _SignalVote("time_of_day", "YES", 0.9, 0.10)
+
+        candles = [self._make_candle(close=99800.0)]
+        context = {
+            "candles_1m": candles,
+            "window_open_price": 100000.0,
+            "minute_in_window": 8,
+            "yes_price": 0.55,
+        }
+        signals = strat.generate_signals(
+            _market_state(yes_price=0.55), self._bullish_ob(), context,
+        )
+        entry_signals = [s for s in signals if s.signal_type == SignalType.ENTRY]
+        # Should pass (veto disabled), entry depends on confidence
+        assert strat._last_evaluation.get("reason") != "momentum_veto"
+
+    def test_veto_below_strength_threshold(self) -> None:
+        """Weak momentum disagreement doesn't trigger veto."""
+        from src.strategies.singularity import SingularityStrategy, _SignalVote
+
+        # Set high veto threshold so weak momentum won't trigger
+        config = self._make_config(veto_enabled=True, veto_strength=0.90)
+        strat = SingularityStrategy(config=config)
+        strat._ofi_analyzer = None
+        strat._futures_detector = None
+        strat._tick_tracker = None
+        strat._vol_detector = None
+        strat._time_analyzer = None
+
+        strat._vote_ofi = lambda ob, ctx: _SignalVote("ofi", "YES", 0.8, 0.25)
+        strat._vote_time_of_day = lambda: _SignalVote("time_of_day", "YES", 0.9, 0.10)
+
+        # Small BTC move: -0.06% → momentum strength = 0.06/0.25 = 0.24, below 0.90
+        candles = [self._make_candle(close=99940.0)]
+        context = {
+            "candles_1m": candles,
+            "window_open_price": 100000.0,
+            "minute_in_window": 8,
+            "yes_price": 0.55,
+        }
+        signals = strat.generate_signals(
+            _market_state(yes_price=0.55), self._bullish_ob(), context,
+        )
+        assert strat._last_evaluation.get("reason") != "momentum_veto"
+
+    def test_veto_no_fire_when_momentum_agrees(self) -> None:
+        """Momentum agrees with majority → no veto."""
+        from src.strategies.singularity import SingularityStrategy, _SignalVote
+
+        config = self._make_config(veto_enabled=True, veto_strength=0.15)
+        strat = SingularityStrategy(config=config)
+        strat._ofi_analyzer = None
+        strat._futures_detector = None
+        strat._tick_tracker = None
+        strat._vol_detector = None
+        strat._time_analyzer = None
+
+        strat._vote_ofi = lambda ob, ctx: _SignalVote("ofi", "YES", 0.8, 0.25)
+        strat._vote_time_of_day = lambda: _SignalVote("time_of_day", "YES", 0.9, 0.10)
+
+        # BTC +0.20% → momentum votes YES, agrees with OFI+time YES majority
+        candles = [self._make_candle(close=100200.0)]
+        context = {
+            "candles_1m": candles,
+            "window_open_price": 100000.0,
+            "minute_in_window": 8,
+            "yes_price": 0.65,
+        }
+        signals = strat.generate_signals(
+            _market_state(yes_price=0.65), self._bullish_ob(), context,
+        )
+        assert strat._last_evaluation.get("reason") != "momentum_veto"
+
+    def test_veto_neutral_momentum_no_fire(self) -> None:
+        """Neutral momentum (no vote) doesn't trigger veto."""
+        from src.strategies.singularity import SingularityStrategy, _SignalVote
+
+        config = self._make_config(veto_enabled=True, veto_strength=0.15)
+        strat = SingularityStrategy(config=config)
+        strat._ofi_analyzer = None
+        strat._futures_detector = None
+        strat._tick_tracker = None
+        strat._vol_detector = None
+        strat._time_analyzer = None
+
+        strat._vote_ofi = lambda ob, ctx: _SignalVote("ofi", "YES", 0.8, 0.25)
+        strat._vote_time_of_day = lambda: _SignalVote("time_of_day", "YES", 0.9, 0.10)
+
+        # BTC +0.005% → below momentum threshold, momentum_vote is None
+        candles = [self._make_candle(close=100005.0)]
+        context = {
+            "candles_1m": candles,
+            "window_open_price": 100000.0,
+            "minute_in_window": 8,
+            "yes_price": 0.55,
+        }
+        signals = strat.generate_signals(
+            _market_state(yes_price=0.55), self._bullish_ob(), context,
+        )
+        assert strat._last_evaluation.get("reason") != "momentum_veto"
+
+    def test_veto_no_direction_entry(self) -> None:
+        """Momentum veto works for NO direction entries too."""
+        from src.strategies.singularity import SingularityStrategy, _SignalVote
+
+        config = self._make_config(veto_enabled=True, veto_strength=0.15)
+        strat = SingularityStrategy(config=config)
+        strat._ofi_analyzer = None
+        strat._futures_detector = None
+        strat._tick_tracker = None
+        strat._vol_detector = None
+        strat._time_analyzer = None
+
+        # OFI + time vote NO
+        strat._vote_ofi = lambda ob, ctx: _SignalVote("ofi", "NO", 0.8, 0.25)
+        strat._vote_time_of_day = lambda: _SignalVote("time_of_day", "NO", 0.9, 0.10)
+
+        # BTC +0.20% → momentum votes YES, vetoes the NO majority
+        candles = [self._make_candle(close=100200.0)]
+        context = {
+            "candles_1m": candles,
+            "window_open_price": 100000.0,
+            "minute_in_window": 8,
+            "yes_price": 0.35,
+        }
+        bearish_ob = OrderBookSnapshot(
+            timestamp=datetime.now(tz=UTC),
+            market_id="test",
+            bids=[OrderBookLevel(price=Decimal("0.39"), size=Decimal("50"))],
+            asks=[OrderBookLevel(price=Decimal("0.40"), size=Decimal("500"))],
+        )
+        signals = strat.generate_signals(
+            _market_state(yes_price=0.35), bearish_ob, context,
+        )
+        entry_signals = [s for s in signals if s.signal_type == SignalType.ENTRY]
+        assert len(entry_signals) == 0
+        assert strat._last_evaluation.get("reason") == "momentum_veto"
