@@ -403,6 +403,7 @@ class BotOrchestrator:
         btc_close: Any | None = None,
         ws_connected: bool = False,
         pending_gtc: bool = False,
+        order_type_label: str = "",
     ) -> None:
         """Publish bot state to Redis for dashboard consumption."""
         from datetime import datetime
@@ -438,6 +439,7 @@ class BotOrchestrator:
                     "size": str(position_size or "0"),
                     "entry_time": str(entry_time or now.isoformat()),
                     "status": "filled",
+                    "order_type": order_type_label,
                 }, ttl=300)
             elif pending_gtc and active_market is not None:
                 await cache.set("bot:position", {
@@ -447,6 +449,7 @@ class BotOrchestrator:
                     "size": str(position_size or "0"),
                     "entry_time": str(entry_time or now.isoformat()),
                     "status": "gtc_pending",
+                    "order_type": order_type_label,
                 }, ttl=300)
             else:
                 await cache.set("bot:position", None, ttl=300)
@@ -1171,6 +1174,7 @@ class BotOrchestrator:
         last_signal_details_str: str = ""
         last_clob_entry_price: Decimal | None = None  # CLOB price at signal time
         last_sigmoid_entry_price: Decimal | None = None  # Sigmoid price at signal time
+        last_order_type_label: str = ""  # Order type for dashboard display
         current_subscribed_yes: str | None = None  # YES token subscribed on poly WS
         current_subscribed_no: str | None = None  # NO token subscribed on poly WS
         last_clob_snapshot_minute: int = -1  # Track per-minute CLOB snapshots
@@ -1516,6 +1520,7 @@ class BotOrchestrator:
                         last_position_size = None
                         last_clob_entry_price = None
                         last_sigmoid_entry_price = None
+                        last_order_type_label = ""
                         # Clear persisted position from Redis
                         try:
                             await self._clear_position(redis_conn)
@@ -1714,6 +1719,7 @@ class BotOrchestrator:
                     btc_close=latest.close,
                     ws_connected=ws_connected,
                     pending_gtc=pending_gtc_position,
+                    order_type_label=last_order_type_label,
                 )
 
                 # --- Check kill switch ---
@@ -1921,6 +1927,30 @@ class BotOrchestrator:
                 if clob_midpoint is not None:
                     clob_mid_history.append(clob_midpoint)
 
+                # Update bot:window with CLOB data (overwrites earlier publish)
+                _clob_src = ""
+                if clob_best_bid is not None and clob_best_ask is not None:
+                    _clob_src = "ws"
+                _clob_sp = (
+                    str(clob_best_ask - clob_best_bid)
+                    if clob_best_ask is not None and clob_best_bid is not None
+                    else ""
+                )
+                try:
+                    await cache.set("bot:window", {
+                        "start_ts": current_window_start or 0,
+                        "minute": minute_in_window,
+                        "cum_return_pct": round(cum_return * 100, 4),
+                        "yes_price": str(yes_price or "0.5"),
+                        "btc_close": str(latest.close),
+                        "clob_bid": str(clob_best_bid) if clob_best_bid is not None else "",
+                        "clob_ask": str(clob_best_ask) if clob_best_ask is not None else "",
+                        "clob_spread": _clob_sp,
+                        "clob_source": _clob_src,
+                    }, ttl=120)
+                except Exception:
+                    logger.debug("clob_window_publish_failed", exc_info=True)
+
                 # Log CLOB vs sigmoid comparison every tick
                 if clob_best_ask is not None:
                     logger.info(
@@ -2027,6 +2057,7 @@ class BotOrchestrator:
                             if _sweep_state.get("sweep_filled"):
                                 has_open_position = True
                                 trade_count += 1
+                                last_order_type_label = "FAK"
                                 _sf_price = _sweep_state.get("sweep_fill_price")
                                 _sf_size = _sweep_state.get("sweep_fill_size")
                                 if _sf_price:
@@ -2109,6 +2140,7 @@ class BotOrchestrator:
                                         ):
                                             has_open_position = True
                                             trade_count += 1
+                                            last_order_type_label = "FAK"
                                             last_entry_price = (
                                                 _fak_order.avg_fill_price
                                                 or _fak_price
@@ -2121,6 +2153,7 @@ class BotOrchestrator:
                                         elif _fak_order.status == OrderStatus.PARTIALLY_FILLED:
                                             has_open_position = True
                                             trade_count += 1
+                                            last_order_type_label = "FAK"
                                             last_entry_price = (
                                                 _fak_order.avg_fill_price
                                                 or _fak_price
@@ -2197,6 +2230,7 @@ class BotOrchestrator:
                                             elif _repost_order.status == OrderStatus.FILLED:
                                                 has_open_position = True
                                                 trade_count += 1
+                                                last_order_type_label = _repost_type.value
                                                 last_entry_price = _repost_order.avg_fill_price or new_ladder_price
                                                 pending_gtc_oid = None
                                                 pending_gtc_internal_id = None
@@ -2843,6 +2877,7 @@ class BotOrchestrator:
                                     )
                                     # Update selected type for downstream logging
                                     order_type_selected = OrderType.GTC
+                                    _actual_order_type = _fb_type
                                     if entry_order.status == OrderStatus.REJECTED:
                                         logger.warning(
                                             "fak_gtc_fallback_also_rejected",
@@ -2893,6 +2928,7 @@ class BotOrchestrator:
                                 last_position_size = position_size
                                 last_confidence = sig.confidence.overall if sig.confidence else 0.0
                                 last_entry_minute = minute_in_window
+                                last_order_type_label = _actual_order_type.value
                                 last_cum_return_entry = cum_return * 100
                                 last_fee_cost = costs.fee_cost
                                 # P0: Capture token_id and market_id for mid-tick
@@ -2984,6 +3020,7 @@ class BotOrchestrator:
                             last_fee_cost = costs.fee_cost
                             last_token_id = token_id
                             last_market_id = market_id
+                            last_order_type_label = _actual_order_type.value
                             last_condition_id = (
                                 (active_market.condition_id or active_market.market_id)
                                 if active_market else market_id
@@ -3306,6 +3343,7 @@ class BotOrchestrator:
                         last_position_size = None
                         last_clob_entry_price = None
                         last_sigmoid_entry_price = None
+                        last_order_type_label = ""
                         # Clear persisted position from Redis
                         try:
                             await self._clear_position(redis_conn)

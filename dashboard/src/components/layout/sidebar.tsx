@@ -98,7 +98,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             <LogOut className="h-4 w-4" />
             Sign out
           </button>
-          <p className="text-zinc-600 text-xs">v1.0.0</p>
+          <p className="text-zinc-600 text-xs">v1.1.0</p>
         </div>
       </aside>
     </>

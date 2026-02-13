@@ -24,6 +24,12 @@ const REASON_DISPLAY: Record<string, string> = {
   ev_negative: 'Negative EV',
   no_depth: 'No Depth',
   entry: 'Entry',
+  momentum_veto: 'Momentum Veto',
+  clob_stability_skip: 'CLOB Unstable',
+  coin_flip_zone_skip: 'Coin-Flip Zone',
+  calibration_skip_no_edge: 'No Edge',
+  desert_skip_paper: 'Desert CLOB',
+  fak_no_real_ask_to_cross: 'No Real Ask',
 };
 
 const REASON_COLORS: Record<string, string> = {
@@ -33,6 +39,12 @@ const REASON_COLORS: Record<string, string> = {
   ev_negative: '#ef4444',      // red
   no_depth: '#a855f7',         // purple
   entry: '#10b981',            // green
+  momentum_veto: '#ef4444',
+  clob_stability_skip: '#f97316',
+  coin_flip_zone_skip: '#eab308',
+  calibration_skip_no_edge: '#6366f1',
+  desert_skip_paper: '#71717a',
+  fak_no_real_ask_to_cross: '#8b5cf6',
 };
 
 function formatReason(reason: string): string {
