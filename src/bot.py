@@ -2587,11 +2587,32 @@ class BotOrchestrator:
                             # (CLOB prior + signal LR) instead of static win prob.
                             # Edge gating rejects trades with insufficient edge.
                             if calibration_enabled and calibrator and edge_calc:
-                                # Determine CLOB mid for calibration
-                                if sig.direction == Side.YES:
-                                    _cal_mid = float(clob_midpoint) if clob_midpoint else 0.50
+                                # Determine CLOB mid for calibration prior.
+                                # Desert detection: clob_midpoint is None or near 0.50
+                                # (from 0.01/0.99 placeholder book) — use entry_price
+                                # (REST last_trade) as the prior instead.
+                                _raw_cal_mid: float | None = None
+                                if sig.direction == Side.YES and clob_midpoint is not None:
+                                    _raw_cal_mid = float(clob_midpoint)
+                                elif sig.direction == Side.NO and clob_midpoint is not None:
+                                    _raw_cal_mid = float(Decimal("1") - clob_midpoint)
+
+                                _cal_mid_is_desert = (
+                                    _raw_cal_mid is None
+                                    or abs(_raw_cal_mid - 0.50) <= 0.05
+                                )
+                                if _cal_mid_is_desert and entry_price is not None:
+                                    _cal_mid = float(entry_price)
+                                    logger.info(
+                                        "calibration_desert_prior_override",
+                                        raw_cal_mid=round(_raw_cal_mid, 4) if _raw_cal_mid else None,
+                                        entry_price=str(entry_price),
+                                        direction=sig.direction.value,
+                                    )
+                                elif _raw_cal_mid is not None:
+                                    _cal_mid = _raw_cal_mid
                                 else:
-                                    _cal_mid = float(Decimal("1") - clob_midpoint) if clob_midpoint else 0.50
+                                    _cal_mid = 0.50  # Last resort — should rarely happen
 
                                 cal_result = calibrator.calibrate(
                                     clob_mid=_cal_mid,

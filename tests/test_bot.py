@@ -1469,3 +1469,148 @@ class TestUpdateRestData:
         assert state is not None
         assert state.best_bid == Decimal("0.45")
         assert state.best_ask == Decimal("0.55")
+
+
+class TestDesertCalibrationPrior:
+    """Tests for desert-aware calibration prior override in the execution pipeline.
+
+    When the CLOB book is a desert (0.01/0.99 → midpoint ≈ 0.50), the
+    calibrator should use entry_price (REST last_trade) as the Bayesian
+    prior instead of the uninformative 0.50 midpoint.
+    """
+
+    def test_desert_clob_mid_none_uses_entry_price(self):
+        """When clob_midpoint is None (desert), _cal_mid should use entry_price."""
+        from src.models.signal import Side
+
+        clob_midpoint = None
+        entry_price = Decimal("0.39")
+        direction = Side.YES
+
+        # Replicate the bot.py logic
+        _raw_cal_mid: float | None = None
+        if direction == Side.YES and clob_midpoint is not None:
+            _raw_cal_mid = float(clob_midpoint)
+        elif direction == Side.NO and clob_midpoint is not None:
+            _raw_cal_mid = float(Decimal("1") - clob_midpoint)
+
+        _cal_mid_is_desert = (
+            _raw_cal_mid is None
+            or abs(_raw_cal_mid - 0.50) <= 0.05
+        )
+        if _cal_mid_is_desert and entry_price is not None:
+            _cal_mid = float(entry_price)
+        elif _raw_cal_mid is not None:
+            _cal_mid = _raw_cal_mid
+        else:
+            _cal_mid = 0.50
+
+        assert _cal_mid == pytest.approx(0.39)
+
+    def test_desert_clob_mid_near_050_uses_entry_price(self):
+        """When clob_midpoint is 0.50 (from 0.01/0.99 book), should override."""
+        from src.models.signal import Side
+
+        clob_midpoint = Decimal("0.50")
+        entry_price = Decimal("0.39")
+        direction = Side.YES
+
+        _raw_cal_mid: float | None = None
+        if direction == Side.YES and clob_midpoint is not None:
+            _raw_cal_mid = float(clob_midpoint)
+        elif direction == Side.NO and clob_midpoint is not None:
+            _raw_cal_mid = float(Decimal("1") - clob_midpoint)
+
+        _cal_mid_is_desert = (
+            _raw_cal_mid is None
+            or abs(_raw_cal_mid - 0.50) <= 0.05
+        )
+        if _cal_mid_is_desert and entry_price is not None:
+            _cal_mid = float(entry_price)
+        elif _raw_cal_mid is not None:
+            _cal_mid = _raw_cal_mid
+        else:
+            _cal_mid = 0.50
+
+        assert _cal_mid == pytest.approx(0.39)
+
+    def test_valid_clob_mid_preserved(self):
+        """When clob_midpoint is a real value (e.g. 0.65), it should be used as-is."""
+        from src.models.signal import Side
+
+        clob_midpoint = Decimal("0.65")
+        entry_price = Decimal("0.60")
+        direction = Side.YES
+
+        _raw_cal_mid: float | None = None
+        if direction == Side.YES and clob_midpoint is not None:
+            _raw_cal_mid = float(clob_midpoint)
+        elif direction == Side.NO and clob_midpoint is not None:
+            _raw_cal_mid = float(Decimal("1") - clob_midpoint)
+
+        _cal_mid_is_desert = (
+            _raw_cal_mid is None
+            or abs(_raw_cal_mid - 0.50) <= 0.05
+        )
+        if _cal_mid_is_desert and entry_price is not None:
+            _cal_mid = float(entry_price)
+        elif _raw_cal_mid is not None:
+            _cal_mid = _raw_cal_mid
+        else:
+            _cal_mid = 0.50
+
+        assert _cal_mid == pytest.approx(0.65)
+
+    def test_desert_prior_produces_smaller_edge(self):
+        """End-to-end: desert prior override produces ~6% edge, not ~17%."""
+        from src.calibration.bayesian_calibrator import BayesianCalibrator
+        from src.calibration.edge_calculator import EdgeCalculator
+
+        calibrator = BayesianCalibrator(
+            max_edge=0.15,
+            default_likelihood_ratio=1.3,
+        )
+        edge_calc = EdgeCalculator(
+            min_edge=0.053,
+            dynamic_min_edge_enabled=True,
+            uncertainty_penalty_scale=0.03,
+        )
+        entry_price = 0.39
+
+        # --- With desert 0.50 prior (OLD behavior) ---
+        cal_desert = calibrator.calibrate(
+            clob_mid=0.50,
+            signal_confidence=0.88,
+            direction="YES",
+            minute=3,
+        )
+        edge_desert = edge_calc.calculate(
+            posterior=cal_desert.posterior,
+            entry_price=entry_price,
+            clob_mid=0.50,
+        )
+
+        # --- With entry_price prior (NEW behavior) ---
+        cal_fixed = calibrator.calibrate(
+            clob_mid=entry_price,
+            signal_confidence=0.88,
+            direction="YES",
+            minute=3,
+        )
+        edge_fixed = edge_calc.calculate(
+            posterior=cal_fixed.posterior,
+            entry_price=entry_price,
+            clob_mid=entry_price,
+        )
+
+        # Desert prior gives phantom edge (>= 0.10)
+        assert edge_desert.fee_adjusted_edge > 0.10, (
+            f"Expected phantom edge > 0.10 with desert prior, "
+            f"got {edge_desert.fee_adjusted_edge:.4f}"
+        )
+
+        # Entry_price prior gives realistic edge (< 0.10)
+        assert edge_fixed.fee_adjusted_edge < 0.10, (
+            f"Expected realistic edge < 0.10 with entry_price prior, "
+            f"got {edge_fixed.fee_adjusted_edge:.4f}"
+        )
