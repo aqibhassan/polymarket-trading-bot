@@ -2456,40 +2456,55 @@ class BotOrchestrator:
                         # target token has no WS data (common on illiquid 15m markets).
                         if order_type_selected in (OrderType.FAK, OrderType.FOK):
                             _had_fresh_ask = False
+                            _fak_ask: Decimal | None = None
                             if sig.direction == Side.YES:
                                 _fak_ask = clob_best_ask
                                 if _fak_ask is None and no_clob_best_bid is not None:
                                     _fak_ask = Decimal("1") - no_clob_best_bid
-                                if _fak_ask is not None:
-                                    entry_price = _fak_ask
-                                    price_source = "clob_best_ask_fak"
-                                    _had_fresh_ask = True
                             elif sig.direction == Side.NO:
                                 _fak_ask = no_clob_best_ask
                                 if _fak_ask is None and clob_best_bid is not None:
                                     _fak_ask = Decimal("1") - clob_best_bid
-                                if _fak_ask is not None:
-                                    entry_price = _fak_ask
+                            # Desert detection: 0.99 ask from WS 0.01/0.99 placeholder
+                            # book is not a real ask — treat as missing.
+                            _fak_ask_is_desert = (
+                                _fak_ask is not None
+                                and _fak_ask >= Decimal("0.95")
+                            )
+                            if _fak_ask is not None and not _fak_ask_is_desert:
+                                entry_price = _fak_ask
+                                if sig.direction == Side.YES:
+                                    price_source = "clob_best_ask_fak"
+                                else:
                                     price_source = "no_clob_best_ask_fak"
-                                    _had_fresh_ask = True
-                            # FAK has no fresh ask to cross. If we have a REST price,
-                            # downgrade to GTC (sits on the book; paper fills instantly).
-                            # This prevents FAK from replacing valid REST prices with
-                            # stale 0.99 asks from the desert book.
+                                _had_fresh_ask = True
+                            # FAK has no usable ask (missing or desert 0.99).
+                            # If we have a valid entry price from the price cascade
+                            # (REST or CLOB last_trade), downgrade to GTC (sits on
+                            # the book; paper fills instantly). This prevents FAK
+                            # from replacing valid prices with stale 0.99 asks.
                             if not _had_fresh_ask:
-                                if "rest_" in price_source:
+                                _has_valid_cascade_price = (
+                                    entry_price is not None
+                                    and entry_price > 0
+                                    and entry_price < Decimal("0.95")
+                                )
+                                if _has_valid_cascade_price:
                                     order_type_selected = OrderType.GTC
                                     logger.info(
-                                        "fak_downgrade_to_gtc_rest_price",
+                                        "fak_downgrade_to_gtc",
                                         price=str(entry_price),
                                         source=price_source,
+                                        fak_ask=str(_fak_ask) if _fak_ask else "none",
+                                        desert=_fak_ask_is_desert,
                                         minute=minute_in_window,
                                     )
                                 else:
                                     logger.info(
-                                        "fak_no_real_ask_to_cross",
-                                        price=str(entry_price),
+                                        "fak_no_usable_price",
+                                        price=str(entry_price) if entry_price else "none",
                                         source=price_source,
+                                        fak_ask=str(_fak_ask) if _fak_ask else "none",
                                         minute=minute_in_window,
                                     )
                                     continue

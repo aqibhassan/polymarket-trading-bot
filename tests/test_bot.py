@@ -1116,7 +1116,7 @@ class TestCoinFlipZone:
 
 
 class TestFAKDowngradeToGTC:
-    """Tests for FAK → GTC downgrade when REST price is available but no fresh ask."""
+    """Tests for FAK → GTC downgrade when no usable ask to cross."""
 
     def _simulate_fak_downgrade(
         self,
@@ -1137,26 +1137,36 @@ class TestFAKDowngradeToGTC:
 
         order_type_selected = OrderType.FAK
         _had_fresh_ask = False
+        _fak_ask: Decimal | None = None
 
         if direction == "YES":
             _fak_ask = clob_best_ask
             if _fak_ask is None and no_clob_best_bid is not None:
                 _fak_ask = Decimal("1") - no_clob_best_bid
-            if _fak_ask is not None:
-                entry_price = _fak_ask
-                price_source = "clob_best_ask_fak"
-                _had_fresh_ask = True
         elif direction == "NO":
             _fak_ask = no_clob_best_ask
             if _fak_ask is None and clob_best_bid is not None:
                 _fak_ask = Decimal("1") - clob_best_bid
-            if _fak_ask is not None:
-                entry_price = _fak_ask
+
+        # Desert detection: 0.99 ask from placeholder book
+        _fak_ask_is_desert = (
+            _fak_ask is not None and _fak_ask >= Decimal("0.95")
+        )
+        if _fak_ask is not None and not _fak_ask_is_desert:
+            entry_price = _fak_ask
+            if direction == "YES":
+                price_source = "clob_best_ask_fak"
+            else:
                 price_source = "no_clob_best_ask_fak"
-                _had_fresh_ask = True
+            _had_fresh_ask = True
 
         if not _had_fresh_ask:
-            if "rest_" in price_source:
+            _has_valid_cascade_price = (
+                entry_price is not None
+                and entry_price > 0
+                and entry_price < Decimal("0.95")
+            )
+            if _has_valid_cascade_price:
                 order_type_selected = OrderType.GTC
             else:
                 return entry_price, price_source, "skip"
@@ -1178,26 +1188,59 @@ class TestFAKDowngradeToGTC:
         assert source == "rest_last_trade_yes"
         assert otype == "GTC"
 
-    def test_rest_midpoint_downgrades_fak_to_gtc(self):
-        """REST midpoint price should also downgrade FAK to GTC."""
+    def test_clob_last_trade_downgrades_fak_to_gtc(self):
+        """CLOB last_trade (from WS/REST seed) should downgrade FAK to GTC."""
         price, source, otype = self._simulate_fak_downgrade(
-            direction="NO",
-            entry_price=Decimal("0.52"),
-            price_source="rest_midpoint_no",
+            direction="YES",
+            entry_price=Decimal("0.41"),
+            price_source="clob_last_trade",
             clob_best_ask=None,
             clob_best_bid=None,
             no_clob_best_ask=None,
             no_clob_best_bid=None,
         )
-        assert price == Decimal("0.52")
-        assert source == "rest_midpoint_no"
+        assert price == Decimal("0.41")
         assert otype == "GTC"
 
-    def test_non_rest_price_skips_when_no_ask(self):
-        """Non-REST price source with no fresh ask should skip (not downgrade)."""
+    def test_desert_ask_099_downgrades_to_gtc_with_valid_price(self):
+        """Desert WS ask (0.99) should NOT be used; downgrade to GTC with cascade price.
+
+        This is the critical bug fix: previously FAK would use 0.99 ask from
+        the 0.01/0.99 placeholder book, which then got rejected by
+        clob_entry_price_too_high. Now 0.99 is detected as desert and the
+        valid cascade price (e.g. 0.41 from clob_last_trade) is kept as GTC.
+        """
         price, source, otype = self._simulate_fak_downgrade(
             direction="YES",
-            entry_price=Decimal("0.50"),
+            entry_price=Decimal("0.41"),
+            price_source="clob_last_trade",
+            clob_best_ask=Decimal("0.99"),  # Desert ask
+            clob_best_bid=Decimal("0.01"),  # Desert bid
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+        )
+        assert price == Decimal("0.41")  # Cascade price preserved (NOT 0.99)
+        assert otype == "GTC"  # Downgraded from FAK
+
+    def test_desert_no_direction_downgrades(self):
+        """NO direction with desert inverted ask should also downgrade."""
+        price, source, otype = self._simulate_fak_downgrade(
+            direction="NO",
+            entry_price=Decimal("0.60"),
+            price_source="no_clob_last_trade",
+            clob_best_ask=Decimal("0.99"),
+            clob_best_bid=Decimal("0.01"),  # Inverted: 1-0.01 = 0.99 → desert
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+        )
+        assert price == Decimal("0.60")
+        assert otype == "GTC"
+
+    def test_no_valid_price_skips(self):
+        """No fresh ask AND no valid cascade price → skip."""
+        price, source, otype = self._simulate_fak_downgrade(
+            direction="YES",
+            entry_price=Decimal("0.99"),  # Desert price from cascade
             price_source="clob_computed_mid",
             clob_best_ask=None,
             clob_best_bid=None,
@@ -1207,12 +1250,12 @@ class TestFAKDowngradeToGTC:
         assert otype == "skip"
 
     def test_fresh_ask_uses_fak_normally(self):
-        """When fresh ask exists, FAK proceeds normally (no downgrade)."""
+        """When fresh non-desert ask exists, FAK proceeds normally."""
         price, source, otype = self._simulate_fak_downgrade(
             direction="YES",
             entry_price=Decimal("0.50"),
             price_source="rest_last_trade_yes",
-            clob_best_ask=Decimal("0.55"),
+            clob_best_ask=Decimal("0.55"),  # Real ask, not desert
             clob_best_bid=Decimal("0.45"),
             no_clob_best_ask=None,
             no_clob_best_bid=None,
@@ -1221,31 +1264,34 @@ class TestFAKDowngradeToGTC:
         assert source == "clob_best_ask_fak"
         assert otype == "FAK"
 
-    def test_desert_book_with_rest_price_downgrades(self):
-        """Desert book (0.01/0.99) + REST price → downgrade to GTC, keep REST price.
-
-        This is the critical bug fix: previously FAK would replace the valid
-        REST price ($0.45) with stale best_ask ($0.99) and get rejected.
-        """
-        # Desert book: bid=0.01, ask=0.99 on YES token
-        # But these are stale/placeholder — the _fak_ask override only fires
-        # if clob_best_ask is not None, which it IS (0.99).
-        # So this case actually uses the desert ask. The fix is that
-        # the desert detection upstream replaces entry_price with REST price
-        # BEFORE we get here, and if WS data is truly stale (None after
-        # freshness check), the downgrade fires.
-        # Test the case where WS data is None (stale/expired):
+    def test_threshold_095_is_desert(self):
+        """Ask at exactly 0.95 should be treated as desert."""
         price, source, otype = self._simulate_fak_downgrade(
             direction="YES",
-            entry_price=Decimal("0.45"),
-            price_source="rest_last_trade_yes",
-            clob_best_ask=None,  # WS data expired
-            clob_best_bid=None,
+            entry_price=Decimal("0.41"),
+            price_source="clob_last_trade",
+            clob_best_ask=Decimal("0.95"),
+            clob_best_bid=Decimal("0.05"),
             no_clob_best_ask=None,
             no_clob_best_bid=None,
         )
-        assert price == Decimal("0.45")  # REST price kept
-        assert otype == "GTC"  # Downgraded, not skipped
+        assert price == Decimal("0.41")
+        assert otype == "GTC"
+
+    def test_ask_094_is_not_desert(self):
+        """Ask at 0.94 should NOT be treated as desert."""
+        price, source, otype = self._simulate_fak_downgrade(
+            direction="YES",
+            entry_price=Decimal("0.41"),
+            price_source="clob_last_trade",
+            clob_best_ask=Decimal("0.94"),
+            clob_best_bid=Decimal("0.06"),
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+        )
+        assert price == Decimal("0.94")  # Uses real ask
+        assert source == "clob_best_ask_fak"
+        assert otype == "FAK"
 
 
 class TestPaperRESTFallback:
