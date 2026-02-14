@@ -385,6 +385,48 @@ class PolymarketScanner:
             market_id=market_id,
         )
 
+    async def get_last_trade_price(self, token_id: str) -> Any:
+        """Fetch the last trade price for a token via CLOB REST API.
+
+        Unauthenticated endpoint — works in both paper and live modes.
+        """
+        await self._rate_limit()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            resp = await client.get(
+                "https://clob.polymarket.com/last-trade-price",
+                params={"token_id": token_id},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def get_midpoint(self, token_id: str) -> Any:
+        """Fetch the midpoint price for a token via CLOB REST API.
+
+        Unauthenticated endpoint — works in both paper and live modes.
+        """
+        await self._rate_limit()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            resp = await client.get(
+                "https://clob.polymarket.com/midpoint",
+                params={"token_id": token_id},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def get_spread(self, token_id: str) -> Any:
+        """Fetch the spread for a token via CLOB REST API.
+
+        Unauthenticated endpoint — works in both paper and live modes.
+        """
+        await self._rate_limit()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            resp = await client.get(
+                "https://clob.polymarket.com/spread",
+                params={"token_id": token_id},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
 
 async def find_best_btc_market(
     min_volume: float = 500,

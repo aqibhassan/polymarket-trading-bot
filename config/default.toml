@@ -139,7 +139,14 @@ max_clob_spread = 0.50
 # bid/ask from WS book snapshots or price_change events — goes stale fast
 clob_bid_ask_freshness_seconds = 30
 # last_trade from WS trade events — less frequent but still useful
-clob_last_trade_freshness_seconds = 120
+# 600s (5 min) is appropriate for 15m markets: a real trade from 5 min ago
+# is still informative, and periodic REST re-polling keeps it fresh.
+clob_last_trade_freshness_seconds = 600
+
+# Periodic REST re-poll interval (seconds) for refreshing CLOB data on
+# illiquid markets where WS delivers no price_change events.
+# Rate impact: 6 requests per 90s = 0.067 req/s (Polymarket allows 10 req/s).
+rest_poll_interval_seconds = 90
 
 # FAK-only mode: always use Fill-And-Kill taker orders.
 # Eliminates GTC adverse selection — we decide when to enter, not counterparties.

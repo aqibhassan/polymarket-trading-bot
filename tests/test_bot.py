@@ -1113,3 +1113,313 @@ class TestCoinFlipZone:
             cal_mid=0.50, half_width=0.08, edge=0.10, override_edge=0.10,
         )
         assert ok is True
+
+
+class TestFAKDowngradeToGTC:
+    """Tests for FAK → GTC downgrade when REST price is available but no fresh ask."""
+
+    def _simulate_fak_downgrade(
+        self,
+        direction: str,
+        entry_price: Decimal,
+        price_source: str,
+        clob_best_ask: Decimal | None,
+        clob_best_bid: Decimal | None,
+        no_clob_best_ask: Decimal | None,
+        no_clob_best_bid: Decimal | None,
+    ) -> tuple[Decimal, str, str]:
+        """Replicate the FAK downgrade logic from bot.py.
+
+        Returns (entry_price, price_source, order_type) where order_type
+        is "FAK", "GTC", or "skip".
+        """
+        from src.models.order import OrderType
+
+        order_type_selected = OrderType.FAK
+        _had_fresh_ask = False
+
+        if direction == "YES":
+            _fak_ask = clob_best_ask
+            if _fak_ask is None and no_clob_best_bid is not None:
+                _fak_ask = Decimal("1") - no_clob_best_bid
+            if _fak_ask is not None:
+                entry_price = _fak_ask
+                price_source = "clob_best_ask_fak"
+                _had_fresh_ask = True
+        elif direction == "NO":
+            _fak_ask = no_clob_best_ask
+            if _fak_ask is None and clob_best_bid is not None:
+                _fak_ask = Decimal("1") - clob_best_bid
+            if _fak_ask is not None:
+                entry_price = _fak_ask
+                price_source = "no_clob_best_ask_fak"
+                _had_fresh_ask = True
+
+        if not _had_fresh_ask:
+            if "rest_" in price_source:
+                order_type_selected = OrderType.GTC
+            else:
+                return entry_price, price_source, "skip"
+
+        return entry_price, price_source, order_type_selected.value
+
+    def test_rest_price_downgrades_fak_to_gtc(self):
+        """REST last_trade price should downgrade FAK to GTC (not skip)."""
+        price, source, otype = self._simulate_fak_downgrade(
+            direction="YES",
+            entry_price=Decimal("0.45"),
+            price_source="rest_last_trade_yes",
+            clob_best_ask=None,
+            clob_best_bid=None,
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+        )
+        assert price == Decimal("0.45")  # REST price preserved
+        assert source == "rest_last_trade_yes"
+        assert otype == "GTC"
+
+    def test_rest_midpoint_downgrades_fak_to_gtc(self):
+        """REST midpoint price should also downgrade FAK to GTC."""
+        price, source, otype = self._simulate_fak_downgrade(
+            direction="NO",
+            entry_price=Decimal("0.52"),
+            price_source="rest_midpoint_no",
+            clob_best_ask=None,
+            clob_best_bid=None,
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+        )
+        assert price == Decimal("0.52")
+        assert source == "rest_midpoint_no"
+        assert otype == "GTC"
+
+    def test_non_rest_price_skips_when_no_ask(self):
+        """Non-REST price source with no fresh ask should skip (not downgrade)."""
+        price, source, otype = self._simulate_fak_downgrade(
+            direction="YES",
+            entry_price=Decimal("0.50"),
+            price_source="clob_computed_mid",
+            clob_best_ask=None,
+            clob_best_bid=None,
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+        )
+        assert otype == "skip"
+
+    def test_fresh_ask_uses_fak_normally(self):
+        """When fresh ask exists, FAK proceeds normally (no downgrade)."""
+        price, source, otype = self._simulate_fak_downgrade(
+            direction="YES",
+            entry_price=Decimal("0.50"),
+            price_source="rest_last_trade_yes",
+            clob_best_ask=Decimal("0.55"),
+            clob_best_bid=Decimal("0.45"),
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+        )
+        assert price == Decimal("0.55")  # Uses fresh ask
+        assert source == "clob_best_ask_fak"
+        assert otype == "FAK"
+
+    def test_desert_book_with_rest_price_downgrades(self):
+        """Desert book (0.01/0.99) + REST price → downgrade to GTC, keep REST price.
+
+        This is the critical bug fix: previously FAK would replace the valid
+        REST price ($0.45) with stale best_ask ($0.99) and get rejected.
+        """
+        # Desert book: bid=0.01, ask=0.99 on YES token
+        # But these are stale/placeholder — the _fak_ask override only fires
+        # if clob_best_ask is not None, which it IS (0.99).
+        # So this case actually uses the desert ask. The fix is that
+        # the desert detection upstream replaces entry_price with REST price
+        # BEFORE we get here, and if WS data is truly stale (None after
+        # freshness check), the downgrade fires.
+        # Test the case where WS data is None (stale/expired):
+        price, source, otype = self._simulate_fak_downgrade(
+            direction="YES",
+            entry_price=Decimal("0.45"),
+            price_source="rest_last_trade_yes",
+            clob_best_ask=None,  # WS data expired
+            clob_best_bid=None,
+            no_clob_best_ask=None,
+            no_clob_best_bid=None,
+        )
+        assert price == Decimal("0.45")  # REST price kept
+        assert otype == "GTC"  # Downgraded, not skipped
+
+
+class TestPaperRESTFallback:
+    """Tests for unified REST fallback in paper mode (previously paper-only desert skip)."""
+
+    def _simulate_desert_fallback(
+        self,
+        entry_price: Decimal | None,
+        price_source: str,
+        rest_ltp_response: Decimal | None,
+        rest_mid_response: Decimal | None,
+        direction: str = "YES",
+    ) -> tuple[Decimal | None, str, bool]:
+        """Replicate desert detection + REST fallback logic.
+
+        Returns (entry_price, price_source, was_desert).
+        """
+        _is_midpoint_source = (
+            "computed_mid" in price_source
+            or "midpoint" in price_source
+        )
+        _is_desert_price = (
+            _is_midpoint_source
+            and entry_price is not None
+            and abs(entry_price - Decimal("0.50")) < Decimal("0.05")
+        )
+
+        # Unified fallback — no mode check
+        if entry_price is None or _is_desert_price:
+            if rest_ltp_response is not None and rest_ltp_response > 0:
+                entry_price = rest_ltp_response
+                _dir_label = "no" if direction == "NO" else "yes"
+                price_source = f"rest_last_trade_{_dir_label}"
+                _is_desert_price = False
+            elif rest_mid_response is not None and rest_mid_response > 0:
+                entry_price = rest_mid_response
+                _dir_label = "no" if direction == "NO" else "yes"
+                price_source = f"rest_midpoint_{_dir_label}"
+
+        return entry_price, price_source, _is_desert_price
+
+    def test_paper_desert_uses_rest_fallback(self):
+        """Paper mode with desert price should use REST fallback (not skip).
+
+        This is the primary fix: previously paper mode would `continue` here.
+        """
+        price, source, is_desert = self._simulate_desert_fallback(
+            entry_price=Decimal("0.50"),
+            price_source="clob_computed_mid",
+            rest_ltp_response=Decimal("0.45"),
+            rest_mid_response=None,
+        )
+        assert price == Decimal("0.45")
+        assert source == "rest_last_trade_yes"
+        assert is_desert is False
+
+    def test_desert_falls_through_to_midpoint(self):
+        """If REST last_trade is None, falls through to REST midpoint."""
+        price, source, _ = self._simulate_desert_fallback(
+            entry_price=Decimal("0.50"),
+            price_source="clob_computed_mid",
+            rest_ltp_response=None,
+            rest_mid_response=Decimal("0.48"),
+        )
+        assert price == Decimal("0.48")
+        assert source == "rest_midpoint_yes"
+
+    def test_non_desert_price_not_overridden(self):
+        """Non-desert price (e.g. real WS last_trade) should not trigger fallback."""
+        price, source, _ = self._simulate_desert_fallback(
+            entry_price=Decimal("0.55"),
+            price_source="clob_last_trade",
+            rest_ltp_response=Decimal("0.45"),
+            rest_mid_response=None,
+        )
+        assert price == Decimal("0.55")  # Unchanged
+        assert source == "clob_last_trade"
+
+    def test_no_rest_data_stays_desert(self):
+        """If REST returns nothing, price stays as desert (will be rejected downstream)."""
+        price, source, is_desert = self._simulate_desert_fallback(
+            entry_price=Decimal("0.50"),
+            price_source="clob_computed_mid",
+            rest_ltp_response=None,
+            rest_mid_response=None,
+        )
+        assert price == Decimal("0.50")
+        assert is_desert is True
+
+    def test_no_direction_rest_fallback(self):
+        """NO direction should get rest_last_trade_no source label."""
+        price, source, _ = self._simulate_desert_fallback(
+            entry_price=Decimal("0.51"),
+            price_source="no_clob_computed_mid",
+            rest_ltp_response=Decimal("0.42"),
+            rest_mid_response=None,
+            direction="NO",
+        )
+        assert price == Decimal("0.42")
+        assert source == "rest_last_trade_no"
+
+
+class TestUpdateRestData:
+    """Tests for PolymarketWSFeed.update_rest_data() — always overwrites."""
+
+    def test_overwrites_existing_last_trade(self):
+        """update_rest_data should overwrite existing last_trade_price."""
+        from src.data.polymarket_ws import PolymarketWSFeed
+
+        feed = PolymarketWSFeed()
+        token = "test_token_123"
+
+        # Seed initial data
+        feed.seed_rest_data(token, {"price": "0.45"}, None, None)
+        state = feed.get_clob_state(token)
+        assert state is not None
+        assert state.last_trade_price == Decimal("0.45")
+
+        # Update should overwrite
+        feed.update_rest_data(token, {"price": "0.52"}, None, None)
+        assert state.last_trade_price == Decimal("0.52")
+
+    def test_seed_does_not_overwrite(self):
+        """seed_rest_data should NOT overwrite existing last_trade_price."""
+        from src.data.polymarket_ws import PolymarketWSFeed
+
+        feed = PolymarketWSFeed()
+        token = "test_token_456"
+
+        feed.seed_rest_data(token, {"price": "0.45"}, None, None)
+        state = feed.get_clob_state(token)
+        assert state is not None
+        assert state.last_trade_price == Decimal("0.45")
+
+        # Seed again — should NOT overwrite
+        feed.seed_rest_data(token, {"price": "0.99"}, None, None)
+        assert state.last_trade_price == Decimal("0.45")  # Unchanged
+
+    def test_update_refreshes_timestamps(self):
+        """update_rest_data should always update timestamps."""
+        from src.data.polymarket_ws import PolymarketWSFeed
+
+        feed = PolymarketWSFeed()
+        token = "test_token_789"
+
+        feed.seed_rest_data(token, {"price": "0.45"}, {"mid": "0.50"}, None)
+        state = feed.get_clob_state(token)
+        assert state is not None
+        old_ltp_ts = state.last_trade_updated
+        old_mid_ts = state.midpoint_updated
+
+        import time
+        time.sleep(0.01)  # Ensure time difference
+
+        feed.update_rest_data(token, {"price": "0.45"}, {"mid": "0.50"}, None)
+        assert state.last_trade_updated is not None
+        assert state.midpoint_updated is not None
+        assert state.last_trade_updated >= old_ltp_ts  # type: ignore[operator]
+        assert state.midpoint_updated >= old_mid_ts  # type: ignore[operator]
+
+    def test_update_derives_bid_ask_from_spread(self):
+        """update_rest_data should derive bid/ask from midpoint + spread."""
+        from src.data.polymarket_ws import PolymarketWSFeed
+
+        feed = PolymarketWSFeed()
+        token = "test_token_spread"
+
+        feed.update_rest_data(
+            token,
+            {"price": "0.50"},
+            {"mid": "0.50"},
+            {"spread": "0.10"},
+        )
+        state = feed.get_clob_state(token)
+        assert state is not None
+        assert state.best_bid == Decimal("0.45")
+        assert state.best_ask == Decimal("0.55")

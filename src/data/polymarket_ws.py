@@ -141,6 +141,66 @@ class PolymarketWSFeed:
         if state.last_updated is None:
             state.last_updated = now
 
+    def update_rest_data(
+        self,
+        token_id: str,
+        last_trade_price: Any,
+        midpoint: Any,
+        spread: Any,
+    ) -> None:
+        """Refresh CLOBState from REST API — always updates timestamps.
+
+        Unlike seed_rest_data (which only sets None fields), this method
+        overwrites existing values. Used by periodic REST re-polling to
+        keep data fresh on illiquid markets where WS delivers no events.
+        """
+        state = self._clob_state.setdefault(token_id, CLOBState())
+        now = datetime.now(tz=UTC)
+
+        # Parse last_trade_price — always overwrite
+        if last_trade_price is not None:
+            try:
+                _val = last_trade_price
+                if isinstance(_val, dict):
+                    _val = _val.get("price", _val)
+                _parsed = Decimal(str(_val))
+                if _parsed > 0:
+                    state.last_trade_price = _parsed
+                    state.last_trade_updated = now
+                    log.info("update_rest_last_trade", token=token_id[:16], price=str(_parsed))
+            except (ValueError, TypeError, ArithmeticError):
+                pass
+
+        # Parse midpoint — always overwrite
+        if midpoint is not None:
+            try:
+                _val = midpoint
+                if isinstance(_val, dict):
+                    _val = _val.get("mid", _val)
+                _parsed = Decimal(str(_val))
+                if _parsed > 0:
+                    state.midpoint = _parsed
+                    state.midpoint_updated = now
+                    log.info("update_rest_midpoint", token=token_id[:16], mid=str(_parsed))
+            except (ValueError, TypeError, ArithmeticError):
+                pass
+
+        # Parse spread → derive best_bid/best_ask — always overwrite
+        if state.midpoint is not None and spread is not None:
+            try:
+                _val = spread
+                if isinstance(_val, dict):
+                    _val = _val.get("spread", _val)
+                _sp = Decimal(str(_val))
+                if _sp >= 0:
+                    state.best_bid = state.midpoint - _sp / 2
+                    state.best_ask = state.midpoint + _sp / 2
+                    state.bid_ask_updated = now
+            except (ValueError, TypeError, ArithmeticError):
+                pass
+
+        state.last_updated = now
+
     async def connect(self) -> None:
         """Connect to Polymarket WebSocket."""
         self._running = True
