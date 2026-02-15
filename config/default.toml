@@ -97,8 +97,8 @@ hard_stop_loss_pct = 0.04
 max_hold_seconds = 420
 
 [risk]
-max_position_pct = 0.10
-min_position_pct = 0.03
+max_position_pct = 0.02
+min_position_pct = 0.01
 max_daily_drawdown_pct = 0.05
 max_order_book_pct = 0.10
 min_spread_threshold = 0.02
@@ -201,7 +201,7 @@ reactive_sweep_max_price = 0.65    # never sweep above this price
 # Bayesian signal calibration: use CLOB mid as prior, model confidence as likelihood
 enabled = true
 max_edge = 0.15            # posterior never exceeds clob_mid + max_edge
-min_edge = 0.03            # minimum fee-adjusted edge to trade (3 cents)
+min_edge = 0.06            # minimum fee-adjusted edge to trade (6 cents)
 default_likelihood_ratio = 1.3  # used when insufficient calibration data
 min_samples_for_calibration = 30  # need N outcomes before using empirical LR
 fee_constant = 0.25        # Polymarket dynamic fee constant
