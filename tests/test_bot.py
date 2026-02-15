@@ -1614,3 +1614,186 @@ class TestDesertCalibrationPrior:
             f"Expected realistic edge < 0.10 with entry_price prior, "
             f"got {edge_fixed.fee_adjusted_edge:.4f}"
         )
+
+
+# === GTC-Maker Mode Tests ===
+
+class TestGTCMakerMode:
+    """Tests for GTC-maker mode: resting orders, paper fills, order type selection."""
+
+    @pytest.mark.asyncio()
+    async def test_paper_trader_gtc_returns_submitted(self):
+        """GTC order should return SUBMITTED and be stored in _resting_orders."""
+        from src.execution.paper_trader import PaperTrader
+        from src.models.order import OrderSide, OrderStatus, OrderType
+
+        pt = PaperTrader(initial_balance=Decimal("10000"), fill_delay=0)
+        order = await pt.submit_order(
+            market_id="m1", token_id="t1", side=OrderSide.BUY,
+            order_type=OrderType.GTC, price=Decimal("0.40"), size=Decimal("100"),
+        )
+        assert order.status == OrderStatus.SUBMITTED
+        assert str(order.id) in pt._resting_orders
+        # Balance should NOT be deducted yet (order is resting, not filled)
+        assert pt.balance == Decimal("10000")
+
+    @pytest.mark.asyncio()
+    async def test_paper_trader_gtd_returns_submitted(self):
+        """GTD order should also return SUBMITTED and rest."""
+        from src.execution.paper_trader import PaperTrader
+        from src.models.order import OrderSide, OrderStatus, OrderType
+
+        pt = PaperTrader(initial_balance=Decimal("10000"), fill_delay=0)
+        order = await pt.submit_order(
+            market_id="m1", token_id="t1", side=OrderSide.BUY,
+            order_type=OrderType.GTD, price=Decimal("0.40"), size=Decimal("100"),
+        )
+        assert order.status == OrderStatus.SUBMITTED
+        assert str(order.id) in pt._resting_orders
+
+    @pytest.mark.asyncio()
+    async def test_paper_trader_fak_fills_immediately(self):
+        """FAK order should fill immediately (existing behavior unchanged)."""
+        from src.execution.paper_trader import PaperTrader
+        from src.models.order import OrderSide, OrderStatus, OrderType
+
+        pt = PaperTrader(
+            initial_balance=Decimal("10000"), fill_delay=0, partial_fill_prob=0,
+        )
+        order = await pt.submit_order(
+            market_id="m1", token_id="t1", side=OrderSide.BUY,
+            order_type=OrderType.FAK, price=Decimal("0.40"), size=Decimal("100"),
+        )
+        assert order.status == OrderStatus.FILLED
+        assert len(pt._resting_orders) == 0
+        assert pt.balance < Decimal("10000")
+
+    @pytest.mark.asyncio()
+    async def test_paper_trader_resting_fill_on_ask_cross(self):
+        """Resting GTC at 0.40 should fill when CLOB best_ask drops to 0.38."""
+        from dataclasses import dataclass
+
+        from src.execution.paper_trader import PaperTrader
+        from src.models.order import OrderSide, OrderStatus, OrderType
+
+        @dataclass
+        class FakeCLOBState:
+            best_bid: Decimal | None = None
+            best_ask: Decimal | None = None
+            midpoint: Decimal | None = None
+            last_trade_price: Decimal | None = None
+
+        state = FakeCLOBState(best_ask=Decimal("0.38"))
+
+        pt = PaperTrader(
+            initial_balance=Decimal("10000"), fill_delay=0,
+            partial_fill_prob=0, slippage_bps=0,
+            clob_state_provider=lambda _tid: state,
+        )
+        order = await pt.submit_order(
+            market_id="m1", token_id="t1", side=OrderSide.BUY,
+            order_type=OrderType.GTC, price=Decimal("0.40"), size=Decimal("100"),
+        )
+        assert order.status == OrderStatus.SUBMITTED
+
+        filled = pt.check_resting_fills()
+        assert len(filled) == 1
+        assert filled[0].status == OrderStatus.FILLED
+        # Maker gets their price (0.40), not the ask (0.38)
+        assert filled[0].avg_fill_price == Decimal("0.40")
+        assert pt.balance == Decimal("10000") - Decimal("0.40") * Decimal("100")
+        assert len(pt._resting_orders) == 0
+
+    @pytest.mark.asyncio()
+    async def test_paper_trader_resting_no_fill_when_ask_above(self):
+        """Resting GTC at 0.40 should NOT fill when CLOB best_ask=0.55."""
+        from dataclasses import dataclass
+
+        from src.execution.paper_trader import PaperTrader
+        from src.models.order import OrderSide, OrderStatus, OrderType
+
+        @dataclass
+        class FakeCLOBState:
+            best_bid: Decimal | None = None
+            best_ask: Decimal | None = None
+            midpoint: Decimal | None = None
+            last_trade_price: Decimal | None = None
+
+        state = FakeCLOBState(best_ask=Decimal("0.55"))
+
+        pt = PaperTrader(
+            initial_balance=Decimal("10000"), fill_delay=0,
+            partial_fill_prob=0,
+            clob_state_provider=lambda _tid: state,
+        )
+        order = await pt.submit_order(
+            market_id="m1", token_id="t1", side=OrderSide.BUY,
+            order_type=OrderType.GTC, price=Decimal("0.40"), size=Decimal("100"),
+        )
+        assert order.status == OrderStatus.SUBMITTED
+
+        filled = pt.check_resting_fills()
+        assert len(filled) == 0
+        assert str(order.id) in pt._resting_orders
+        assert pt.balance == Decimal("10000")  # Unchanged
+
+    @pytest.mark.asyncio()
+    async def test_paper_trader_cancel_removes_resting(self):
+        """Cancel a resting GTC should remove from _resting_orders."""
+        from src.execution.paper_trader import PaperTrader
+        from src.models.order import OrderSide, OrderStatus, OrderType
+
+        pt = PaperTrader(initial_balance=Decimal("10000"), fill_delay=0)
+        order = await pt.submit_order(
+            market_id="m1", token_id="t1", side=OrderSide.BUY,
+            order_type=OrderType.GTC, price=Decimal("0.40"), size=Decimal("100"),
+        )
+        oid = str(order.id)
+        assert oid in pt._resting_orders
+
+        cancelled = await pt.cancel_order(oid)
+        assert cancelled is True
+        assert oid not in pt._resting_orders
+        assert pt._orders[oid].status == OrderStatus.CANCELLED
+
+    def test_select_order_type_gtc_early_window(self):
+        """fak_only=False, minute=3 → should return GTC (maker)."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.40"),
+            clob_spread=Decimal("0.10"),
+            minute_in_window=3,
+            fok_spread_threshold=Decimal("0.30"),
+            fok_late_minute=11,
+            use_fak_taker=True,
+            fak_only=False,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.GTC
+
+    def test_select_order_type_fak_late_window(self):
+        """fak_only=False, minute=12 → should return FAK (taker for urgency)."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.40"),
+            clob_spread=Decimal("0.10"),
+            minute_in_window=12,
+            fok_spread_threshold=Decimal("0.30"),
+            fok_late_minute=11,
+            use_fak_taker=True,
+            fak_only=False,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.FAK
+
+    def test_select_order_type_fak_only_always_fak(self):
+        """fak_only=True → should always return FAK regardless of minute."""
+        result = BotOrchestrator._select_order_type(
+            clob_last_trade=Decimal("0.40"),
+            clob_spread=Decimal("0.10"),
+            minute_in_window=3,
+            fok_spread_threshold=Decimal("0.30"),
+            fok_late_minute=11,
+            use_fak_taker=True,
+            fak_only=True,
+        )
+        from src.models.order import OrderType
+        assert result == OrderType.FAK

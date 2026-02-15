@@ -961,7 +961,10 @@ class BotOrchestrator:
                 skip_confirmation=auto_confirm,
             )
         else:
-            paper_trader = PaperTrader(initial_balance=initial_balance)
+            paper_trader = PaperTrader(
+                initial_balance=initial_balance,
+                clob_state_provider=poly_ws_feed.get_clob_state,
+            )
             bridge = ExecutionBridge(
                 mode=self._mode,
                 paper_trader=paper_trader,
@@ -1260,8 +1263,8 @@ class BotOrchestrator:
                 # --- Window boundary transition ---
                 if current_window_start is not None and w_start != current_window_start:
                     # Check if pending GTC was filled before recording PnL
-                    # (only relevant in legacy GTC mode, skipped when fak_only)
-                    if not fak_only and pending_gtc_oid and bridge.mode == "live" and bridge._live_trader:
+                    if not fak_only and pending_gtc_oid:
+                      if bridge.mode == "live" and bridge._live_trader:
                         try:
                             resp = bridge._live_trader._clob_client.get_order(pending_gtc_oid)
                             gtc_status = resp.get("status", "") if isinstance(resp, dict) else ""
@@ -1299,13 +1302,37 @@ class BotOrchestrator:
                         except Exception:
                             logger.debug("gtc_settlement_check_failed", exc_info=True)
                             has_open_position = False
-                        pending_gtc_oid = None
-                        pending_gtc_internal_id = None
-                        pending_gtc_position = False
-                        pending_gtc_price = None
-                        pending_gtc_token_id = None
-                        _sweep_state["pending_gtc_oid"] = None
-                        _sweep_state["sweep_filled"] = False
+                      elif bridge.mode == "paper" and bridge._paper_trader:
+                        # Paper mode: check resting fills one last time
+                        _filled = bridge._paper_trader.check_resting_fills()
+                        _found = False
+                        for _fo in _filled:
+                            if (
+                                str(_fo.id) == pending_gtc_internal_id
+                                or _fo.exchange_order_id == pending_gtc_oid
+                            ):
+                                has_open_position = True
+                                trade_count += 1
+                                last_position_size = _fo.filled_size or last_position_size
+                                last_fee_cost = Decimal("0")  # maker = 0% fee
+                                _found = True
+                                logger.info(
+                                    "paper_gtc_filled_at_settlement",
+                                    fill_size=str(last_position_size),
+                                )
+                        if not _found:
+                            # Still resting at window boundary → cancel, position never opened
+                            _cancel_id = pending_gtc_internal_id or pending_gtc_oid
+                            await bridge.cancel_order(_cancel_id)
+                            has_open_position = False
+                            logger.info("paper_gtc_not_filled_at_settlement")
+                      pending_gtc_oid = None
+                      pending_gtc_internal_id = None
+                      pending_gtc_position = False
+                      pending_gtc_price = None
+                      pending_gtc_token_id = None
+                      _sweep_state["pending_gtc_oid"] = None
+                      _sweep_state["sweep_filled"] = False
 
                     # Force-close any open position at window end
                     if has_open_position and last_entry_price is not None:
@@ -2009,16 +2036,16 @@ class BotOrchestrator:
                         logger.debug("clob_snapshot_insert_failed", exc_info=True)
 
                 # --- Mid-tick GTC fill check (every 3rd tick ≈ 15s) ---
-                # Only active in legacy GTC mode. In FAK-only mode, there are
-                # no resting orders to poll, so skip entirely.
+                # Active in GTC-maker mode (fak_only=false). Checks resting
+                # GTC/GTD orders for fills — via CLOB API (live) or
+                # PaperTrader.check_resting_fills() (paper).
                 gtc_poll_counter += 1
                 if (
                     not fak_only
                     and pending_gtc_oid
-                    and bridge.mode == "live"
-                    and bridge._live_trader
                     and gtc_poll_counter % 3 == 0
                 ):
+                  if bridge.mode == "live" and bridge._live_trader:
                     try:
                         _gtc_resp = bridge._live_trader._clob_client.get_order(
                             pending_gtc_oid,
@@ -2257,6 +2284,29 @@ class BotOrchestrator:
                         logger.debug(
                             "mid_tick_gtc_check_failed", exc_info=True,
                         )
+                  elif bridge.mode == "paper" and bridge._paper_trader:
+                    _filled = bridge._paper_trader.check_resting_fills()
+                    for _fo in _filled:
+                        if (
+                            str(_fo.id) == pending_gtc_internal_id
+                            or _fo.exchange_order_id == pending_gtc_oid
+                        ):
+                            has_open_position = True
+                            pending_gtc_oid = None
+                            pending_gtc_internal_id = None
+                            pending_gtc_position = False
+                            pending_gtc_price = None
+                            pending_gtc_token_id = None
+                            _sweep_state["pending_gtc_oid"] = None
+                            trade_count += 1
+                            last_position_size = _fo.filled_size or last_position_size
+                            # Maker fills: 0% fee
+                            last_fee_cost = Decimal("0")
+                            logger.info(
+                                "paper_gtc_filled",
+                                minute=minute_in_window,
+                                fill_size=str(last_position_size),
+                            )
 
                 # --- Generate signals ---
                 signals = self._strategy.generate_signals(
@@ -2845,8 +2895,8 @@ class BotOrchestrator:
                             )
                             live_mode = bridge.mode == "live"
 
-                            # P5: GTD auto-expiry — only for legacy GTC mode.
-                            # FAK-only mode uses immediate fills, no expiry needed.
+                            # P5: GTD auto-expiry — convert GTC to GTD with
+                            # auto-expiry before window settlement.
                             _order_expiration: int | None = None
                             _actual_order_type = order_type_selected
                             if (
@@ -2854,7 +2904,6 @@ class BotOrchestrator:
                                 and use_gtd_expiry
                                 and order_type_selected == OrderType.GTC
                                 and current_window_start is not None
-                                and live_mode
                             ):
                                 _window_end_ts = current_window_start + 900  # 15 min window
                                 _order_expiration = _window_end_ts - gtd_expiry_buffer_seconds
@@ -2947,8 +2996,9 @@ class BotOrchestrator:
                                     exchange_oid=entry_order.exchange_order_id,
                                 )
                                 continue
-                            if not fak_only and live_mode and entry_order.status == OrderStatus.SUBMITTED:
-                                pending_gtc_oid = entry_order.exchange_order_id
+                            if not fak_only and entry_order.status == OrderStatus.SUBMITTED:
+                                # Paper mode: use internal id since exchange_order_id is None
+                                pending_gtc_oid = entry_order.exchange_order_id or str(entry_order.id)
                                 pending_gtc_internal_id = str(entry_order.id)
                                 pending_gtc_price = entry_price  # Track for ladder repost
                                 pending_gtc_token_id = token_id  # Track for reactive sweep

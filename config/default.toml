@@ -148,10 +148,10 @@ clob_last_trade_freshness_seconds = 600
 # Rate impact: 6 requests per 90s = 0.067 req/s (Polymarket allows 10 req/s).
 rest_poll_interval_seconds = 90
 
-# FAK-only mode: always use Fill-And-Kill taker orders.
-# Eliminates GTC adverse selection — we decide when to enter, not counterparties.
-# 2% taker fee is tiny vs adverse selection losses ($3-10/trade).
-fak_only = true
+# GTC-maker mode: post limit orders on the book, let counterparties come to us.
+# 0% maker fee (vs 2% taker), we set the price, works on desert books.
+# Late-window (minute 11+) still uses FAK taker for urgency.
+fak_only = false
 
 # FOK (Fill-Or-Kill) taker execution: cross spread when liquidity appears
 fok_spread_threshold = 0.30      # Spread < 30% → eligible for FOK taker
@@ -176,8 +176,7 @@ kelly_confidence_cap = 0.95          # never use more than this in Kelly
 
 # Time-escalating price ladder: passive early, aggressive late
 # Offset added to entry price based on minute in window
-# Disabled: FAK-only mode doesn't use GTC resting orders
-price_ladder_enabled = false
+price_ladder_enabled = true
 price_ladder_offset_min2 = 0.00    # minutes 2-4: post at last_trade (no offset)
 price_ladder_offset_min5 = 0.03    # minutes 5-7: +3 cents aggressive
 price_ladder_offset_min8 = 0.07    # minutes 8-9: +7 cents moderately aggressive
@@ -201,7 +200,7 @@ reactive_sweep_max_price = 0.65    # never sweep above this price
 # Bayesian signal calibration: use CLOB mid as prior, model confidence as likelihood
 enabled = true
 max_edge = 0.15            # posterior never exceeds clob_mid + max_edge
-min_edge = 0.06            # minimum fee-adjusted edge to trade (6 cents)
+min_edge = 0.04            # minimum fee-adjusted edge to trade (4 cents, maker=0% fee)
 default_likelihood_ratio = 1.3  # used when insufficient calibration data
 min_samples_for_calibration = 30  # need N outcomes before using empirical LR
 fee_constant = 0.25        # Polymarket dynamic fee constant
