@@ -217,7 +217,7 @@ coin_flip_override_edge = 0.10
 
 # Dynamic min edge: scale min_edge with market uncertainty (distance from 0.50)
 dynamic_min_edge_enabled = true
-uncertainty_penalty_scale = 0.03
+uncertainty_penalty_scale = 0.01
 
 [validation]
 # Live performance validation — auto-halt on degraded metrics

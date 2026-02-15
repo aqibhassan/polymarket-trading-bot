@@ -89,6 +89,8 @@ class EdgeCalculator:
         posterior: float,
         entry_price: float,
         clob_mid: float,
+        *,
+        is_maker: bool = False,
     ) -> EdgeResult:
         """Calculate fee-adjusted edge and tradeability.
 
@@ -96,13 +98,14 @@ class EdgeCalculator:
             posterior: Calibrated posterior probability (0-1).
             entry_price: Actual entry price on CLOB (0-1).
             clob_mid: CLOB midpoint for reference.
+            is_maker: True for GTC/GTD maker orders (0% fee on Polymarket).
 
         Returns:
             EdgeResult with raw edge, fee, adjusted edge, and
             tradeability flag.
         """
         raw_edge = posterior - entry_price
-        fee = self.polymarket_fee(entry_price)
+        fee = 0.0 if is_maker else self.polymarket_fee(entry_price)
         # Fee is a rate on notional (shares * price), so per-share fee cost
         # is fee_rate * entry_price.  Deduct that from the per-share edge.
         fee_adjusted_edge = raw_edge - fee * entry_price

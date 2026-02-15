@@ -2671,10 +2671,14 @@ class BotOrchestrator:
                                     minute=minute_in_window,
                                     tracker=cal_tracker,
                                 )
+                                _is_maker = order_type_selected in (
+                                    OrderType.GTC, OrderType.GTD,
+                                )
                                 edge_result = edge_calc.calculate(
                                     posterior=cal_result.posterior,
                                     entry_price=float(entry_price),
                                     clob_mid=_cal_mid,
+                                    is_maker=_is_maker,
                                 )
                                 if not edge_result.is_tradeable:
                                     logger.info(
