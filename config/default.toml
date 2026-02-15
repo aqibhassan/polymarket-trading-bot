@@ -213,7 +213,7 @@ clob_stability_min_samples = 3
 # Coin-flip zone: skip when direction-aware mid is near 0.50 (max uncertainty)
 coin_flip_skip_enabled = true
 coin_flip_half_width = 0.08
-coin_flip_override_edge = 0.10
+coin_flip_override_edge = 0.06
 
 # Dynamic min edge: scale min_edge with market uncertainty (distance from 0.50)
 dynamic_min_edge_enabled = true
