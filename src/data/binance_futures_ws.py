@@ -13,7 +13,7 @@ import time
 from collections import deque
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import websockets
@@ -44,6 +44,7 @@ class BinanceFuturesWSFeed:
         max_velocity_ticks: int = 5000,
         rest_fallback: bool = True,
         rest_poll_interval: float = 5.0,
+        vpin_callback: Callable[[float, bool], None] | None = None,
     ) -> None:
         self._ws_url = ws_url
         self._symbol = symbol
@@ -68,6 +69,7 @@ class BinanceFuturesWSFeed:
         self._rest_mode = False
         self._ws_failures = 0
         self._ws_max_failures = 3  # switch to REST after 3 WS failures
+        self._vpin_callback = vpin_callback
 
     @property
     def is_connected(self) -> bool:
@@ -277,6 +279,8 @@ class BinanceFuturesWSFeed:
         }
 
         self._trades.append(trade)
+        if self._vpin_callback is not None:
+            self._vpin_callback(float(quantity), is_buyer_maker)
         self._latest_price = price
         self._velocity_ticks.append((time.monotonic(), price))
 

@@ -1,15 +1,19 @@
-"""Singularity Ensemble Strategy — combines 5 signal sources for defensible edge.
+"""Singularity Ensemble Strategy — combines 8 signal sources for defensible edge.
 
 Signals:
-  1. Momentum Confirmation (40% weight) — BTC 15m cumulative return direction
-  2. Order Flow Imbalance (25% weight) — order book bid/ask imbalance
-  3. Futures Lead-Lag (15% weight) — Binance perps leading spot/Polymarket
-  4. Volatility Regime (10% weight) — realized vs implied vol mismatch
-  5. Time-of-Day (10% weight) — hourly seasonality adjustment
+  1. Momentum Confirmation (25% weight) — BTC 15m cumulative return direction
+  2. Order Flow Imbalance (15% weight) — order book bid/ask imbalance
+  3. Futures Lead-Lag (10% weight) — Binance perps leading spot/Polymarket
+  4. Volatility Regime (5% weight) — realized vs implied vol mismatch
+  5. Time-of-Day (5% weight) — hourly seasonality adjustment
+  6. VPIN (20% weight) — Volume-Synchronized Probability of Informed Trading
+  7. OI Delta (15% weight) — Open Interest change confirmation
+  8. Window Memory (5% weight) — Multi-window serial correlation
 
-Entry requires minimum 3 of 5 signals to agree on direction.
+Entry requires minimum 3 of 8 signals to agree on direction.
 Exit on 2+ signal reversals or resolution guard at minute 12 (tighter).
 Dynamic position sizing via Kelly * signal_count_mult * time_mult * vol_mult.
+Regime-adaptive weighting: EXPANSION boosts momentum+VPIN, CONTRACTION boosts OFI+memory.
 """
 
 from __future__ import annotations
@@ -46,11 +50,12 @@ class _SignalVote:
 
 @register("singularity")
 class SingularityStrategy(BaseStrategy):
-    """Ensemble strategy combining 5 orthogonal signal sources.
+    """Ensemble strategy combining 8 orthogonal signal sources.
 
     Gracefully degrades when signal sources are unavailable: if fewer
-    than 5 sources produce a vote, the minimum agreement count and
-    weights are adjusted proportionally.
+    than 8 sources produce a vote, the minimum agreement count and
+    weights are adjusted proportionally. Supports regime-adaptive
+    weighting (EXPANSION/NEUTRAL/CONTRACTION).
     """
 
     REQUIRED_PARAMS: ClassVar[list[str]] = [
@@ -67,6 +72,21 @@ class SingularityStrategy(BaseStrategy):
         self._w_futures = float(config.get("strategy.singularity.weight_futures", 0.15))
         self._w_vol = float(config.get("strategy.singularity.weight_vol", 0.10))
         self._w_time = float(config.get("strategy.singularity.weight_time", 0.10))
+        self._w_vpin = float(config.get("strategy.singularity.weight_vpin", 0.20))
+        self._w_oi_delta = float(config.get("strategy.singularity.weight_oi_delta", 0.15))
+        self._w_window_memory = float(config.get("strategy.singularity.weight_window_memory", 0.05))
+
+        # --- Default weights snapshot (for regime reset) ---
+        self._default_weights = {
+            "momentum": self._w_momentum,
+            "ofi": self._w_ofi,
+            "futures": self._w_futures,
+            "vol": self._w_vol,
+            "time": self._w_time,
+            "vpin": self._w_vpin,
+            "oi_delta": self._w_oi_delta,
+            "window_memory": self._w_window_memory,
+        }
 
         # --- Entry parameters ---
         self._min_signals_agree = int(config.get("strategy.singularity.min_signals_agree", 3))
@@ -240,9 +260,28 @@ class SingularityStrategy(BaseStrategy):
         if time_vote is not None:
             votes.append(time_vote)
 
-        # Build vote details for dashboard (all 5 slots, voted or not)
+        # Signal 6: VPIN
+        vpin_vote = self._vote_vpin(context)
+        if vpin_vote is not None:
+            votes.append(vpin_vote)
+
+        # Signal 7: OI Delta
+        oi_vote = self._vote_oi_delta(context)
+        if oi_vote is not None:
+            votes.append(oi_vote)
+
+        # Signal 8: Window Memory
+        memory_vote = self._vote_window_memory(context)
+        if memory_vote is not None:
+            votes.append(memory_vote)
+
+        # --- Regime-adaptive weighting ---
+        regime = context.get("market_regime", "neutral")
+        self._apply_regime_weights(regime)
+
+        # Build vote details for dashboard (all 8 slots, voted or not)
         _vote_results: list[dict[str, Any]] = []
-        for _sv in [momentum_vote, ofi_vote, futures_vote, vol_vote, time_vote]:
+        for _sv in [momentum_vote, ofi_vote, futures_vote, vol_vote, time_vote, vpin_vote, oi_vote, memory_vote]:
             if _sv is not None:
                 _vote_results.append({"name": _sv.name, "direction": _sv.direction, "strength": round(_sv.strength, 4)})
 
@@ -611,6 +650,83 @@ class SingularityStrategy(BaseStrategy):
             weight=self._w_time,
         )
 
+    def _vote_vpin(self, context: dict[str, Any]) -> _SignalVote | None:
+        """Signal 6: VPIN-based informed flow direction."""
+        vpin = context.get("vpin", 0.0)
+        vpin_direction = context.get("vpin_direction", "neutral")
+        vpin_strength = context.get("vpin_strength", 0.0)
+
+        if vpin < 0.4 or vpin_direction == "neutral":
+            return None
+
+        return _SignalVote(
+            name="vpin",
+            direction=vpin_direction,
+            strength=vpin_strength,
+            weight=self._w_vpin,
+        )
+
+    def _vote_oi_delta(self, context: dict[str, Any]) -> _SignalVote | None:
+        """Signal 7: Open Interest delta confirmation."""
+        oi_delta = context.get("oi_delta", 0.0)
+        oi_direction = context.get("oi_direction", "neutral")
+
+        if oi_direction == "neutral" or abs(oi_delta) < 0.001:
+            return None
+
+        strength = min(abs(oi_delta) / 0.01, 1.0)
+        return _SignalVote(
+            name="oi_delta",
+            direction=oi_direction,
+            strength=strength,
+            weight=self._w_oi_delta,
+        )
+
+    def _vote_window_memory(self, context: dict[str, Any]) -> _SignalVote | None:
+        """Signal 8: Multi-window serial correlation."""
+        mem_direction = context.get("window_memory_direction", "neutral")
+        mem_strength = context.get("window_memory_strength", 0.0)
+
+        if mem_direction == "neutral" or mem_strength < 0.2:
+            return None
+
+        return _SignalVote(
+            name="window_memory",
+            direction=mem_direction,
+            strength=mem_strength,
+            weight=self._w_window_memory,
+        )
+
+    def _apply_regime_weights(self, regime: str) -> None:
+        """Apply regime-adaptive signal weights.
+
+        EXPANSION: boost momentum + VPIN (trending signals)
+        CONTRACTION: boost OFI + window_memory (mean-reversion signals)
+        NEUTRAL: use default config weights
+        """
+        if regime == "expansion":
+            self._w_momentum = 0.30
+            self._w_ofi = 0.10
+            self._w_futures = 0.10
+            self._w_vol = 0.05
+            self._w_time = 0.05
+            self._w_vpin = 0.25
+            self._w_oi_delta = 0.10
+            self._w_window_memory = 0.05
+        elif regime == "contraction":
+            self._w_momentum = 0.15
+            self._w_ofi = 0.25
+            self._w_futures = 0.10
+            self._w_vol = 0.05
+            self._w_time = 0.05
+            self._w_vpin = 0.15
+            self._w_oi_delta = 0.10
+            self._w_window_memory = 0.15
+        else:
+            # Reset to default config weights
+            for k, v in self._default_weights.items():
+                setattr(self, f"_w_{k}", v)
+
     # ------------------------------------------------------------------
     # Exit logic
     # ------------------------------------------------------------------
@@ -737,12 +853,15 @@ class SingularityStrategy(BaseStrategy):
         """Compute ensemble position size multiplier.
 
         3 signals agree: 1.0x (base)
-        4 signals agree: 1.5x
-        5 signals agree: 1.75x (max)
+        4-5 signals agree: 1.25x
+        6-7 signals agree: 1.5x
+        8 signals agree: 1.75x (max)
         """
         if agreeing_count <= 3:
             return 1.0
-        if agreeing_count == 4:
+        if agreeing_count <= 5:
+            return 1.25
+        if agreeing_count <= 7:
             return 1.5
         return 1.75
 

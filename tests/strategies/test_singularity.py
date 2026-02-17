@@ -339,9 +339,10 @@ class TestSingularityStrategy:
         from src.strategies.singularity import SingularityStrategy
 
         strat = SingularityStrategy(config=mock_config)
-        assert strat.get_position_size_multiplier(3, 5) == 1.0
-        assert strat.get_position_size_multiplier(4, 5) == 1.5
-        assert strat.get_position_size_multiplier(5, 5) == 1.75
+        assert strat.get_position_size_multiplier(3, 8) == 1.0
+        assert strat.get_position_size_multiplier(5, 8) == 1.25
+        assert strat.get_position_size_multiplier(6, 8) == 1.5
+        assert strat.get_position_size_multiplier(8, 8) == 1.75
 
     def test_graceful_degradation(self, mock_config: MagicMock) -> None:
         """Strategy works even with no optional analyzers."""

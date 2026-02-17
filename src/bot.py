@@ -568,6 +568,10 @@ class BotOrchestrator:
 
         from src.data.binance_futures_ws import BinanceFuturesWSFeed
         from src.data.binance_ws import BinanceWSFeed
+        from src.engine.vpin_analyzer import VPINAnalyzer
+        from src.engine.oi_delta_tracker import OIDeltaTracker
+        from src.engine.window_memory import WindowMemory
+        from src.engine.regime_classifier import RegimeClassifier
         from src.data.clickhouse_store import ClickHouseStore
         from src.data.polymarket_scanner import PolymarketScanner
         from src.data.polymarket_ws import PolymarketWSFeed
@@ -867,9 +871,15 @@ class BotOrchestrator:
             symbol="BTCUSDT",
             interval="1m",
         )
+        vpin_analyzer = VPINAnalyzer(bucket_size=10.0, n_buckets=50)
+        oi_tracker = OIDeltaTracker(poll_interval=30.0)
+        window_memory = WindowMemory(max_windows=10)
+        regime_classifier = RegimeClassifier()
+
         futures_feed = BinanceFuturesWSFeed(
             ws_url="wss://fstream.binance.com/ws/btcusdt@aggTrade",
             symbol="BTCUSDT",
+            vpin_callback=vpin_analyzer.on_agg_trade,
         )
         scanner = PolymarketScanner()
         poly_ws_url = str(self._config.get(
@@ -1041,6 +1051,7 @@ class BotOrchestrator:
 
         await ws_feed.connect()
         await futures_feed.connect()
+        await oi_tracker.start()
         try:
             await poly_ws_feed.connect()
         except Exception:
@@ -1606,6 +1617,18 @@ class BotOrchestrator:
                         except Exception:
                             logger.debug("signal_activity_window_summary_failed", exc_info=True)
 
+                    # Record window outcome for serial correlation signal
+                    if window_candles and window_open_price is not None and float(window_open_price) > 0:
+                        _wm_close = float(window_candles[-1].close)
+                        _wm_return = (_wm_close - float(window_open_price)) / float(window_open_price)
+                        _wm_direction = "YES" if _wm_return >= 0 else "NO"
+                        window_memory.record_outcome(_wm_direction)
+                        logger.debug(
+                            "window_memory_recorded",
+                            direction=_wm_direction,
+                            cum_return=round(_wm_return * 100, 4),
+                        )
+
                     window_candles = []
                     window_open_price = None
                     current_window_start = None
@@ -1770,6 +1793,14 @@ class BotOrchestrator:
                 futures_price = futures_feed.get_latest_price()
                 spot_price = latest.close  # Binance spot 1m candle close
 
+                # Determine BTC price direction for OI delta
+                _price_dir = "neutral"
+                if window_candles and window_open_price:
+                    _cum = (float(window_candles[-1].close) - float(window_open_price)) / float(window_open_price)
+                    _price_dir = "YES" if _cum > 0.001 else ("NO" if _cum < -0.001 else "neutral")
+
+                _mem_dir, _mem_str = window_memory.get_contrarian_signal()
+
                 context: dict[str, Any] = {
                     "candles_1m": window_candles,
                     "window_open_price": window_open_price,
@@ -1781,6 +1812,18 @@ class BotOrchestrator:
                     "futures_velocity_pct_per_min": futures_feed.get_velocity(60.0),
                     # Tick buffer for vol regime
                     "recent_ticks": [c.close for c in window_candles],
+                    # VPIN
+                    "vpin": vpin_analyzer.get_vpin(),
+                    "vpin_direction": vpin_analyzer.get_direction(),
+                    "vpin_strength": vpin_analyzer.get_strength(),
+                    # OI Delta
+                    "oi_delta": oi_tracker.get_delta(),
+                    "oi_direction": oi_tracker.get_direction_with_price(_price_dir),
+                    # Window Memory
+                    "window_memory_direction": _mem_dir,
+                    "window_memory_strength": _mem_str,
+                    # Regime
+                    "market_regime": regime_classifier.classify(window_candles),
                 }
 
                 # Build MarketState from scanner result or synthetic
@@ -2617,6 +2660,22 @@ class BotOrchestrator:
                                 order_type=order_type_selected.value,
                             )
                             continue
+
+                        # --- Payoff ratio gate: demand asymmetric win/loss ---
+                        _entry_f = float(entry_price)
+                        if _entry_f > 0:
+                            _payoff_ratio = (1.0 - _entry_f) / _entry_f
+                            _min_payoff_ratio = float(
+                                self._config.get("execution.pricing.min_payoff_ratio", 1.20)
+                            )
+                            if _payoff_ratio < _min_payoff_ratio:
+                                logger.info(
+                                    "payoff_ratio_gate_skip",
+                                    entry_price=str(entry_price),
+                                    payoff_ratio=round(_payoff_ratio, 4),
+                                    min_required=_min_payoff_ratio,
+                                )
+                                continue
 
                         # --- Position sizing: fixed bet or Kelly ---
                         # Sizer returns USD amount; convert to shares (USD / entry_price)
@@ -3487,6 +3546,7 @@ class BotOrchestrator:
             ws_connected = False
             await ws_feed.disconnect()
             await futures_feed.disconnect()
+            await oi_tracker.stop()
             await poly_ws_feed.disconnect()
             self._remove_sentinel(_WS_CONNECTED_FILE)
             await cache.close()

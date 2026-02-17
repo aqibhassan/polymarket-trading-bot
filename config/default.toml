@@ -43,17 +43,20 @@ threshold_pct = 0.05
 entry_minute_start = 2
 entry_minute_end = 12
 min_confidence = 0.45
-min_signals_agree = 2
+min_signals_agree = 3
 hold_to_settlement = true
 stop_loss_pct = 1.00
 profit_target_pct = 0.40
 resolution_guard_minute = 15
 estimated_win_prob = 0.838
-weight_momentum = 0.30
-weight_ofi = 0.25
-weight_futures = 0.15
-weight_vol = 0.10
-weight_time = 0.10
+weight_momentum = 0.25
+weight_ofi = 0.15
+weight_futures = 0.10
+weight_vol = 0.05
+weight_time = 0.05
+weight_vpin = 0.20
+weight_oi_delta = 0.15
+weight_window_memory = 0.05
 # Contrarian filter: allow entries when BTC has moved up to 0.10% against
 # signal direction. Default 0.0% was blocking legitimate ensemble signals.
 skip_contrarian = true
@@ -132,7 +135,8 @@ max_spread_cents = 0.05
 
 [execution.pricing]
 use_clob_pricing = true
-max_clob_entry_price = 0.65
+max_clob_entry_price = 0.45
+min_payoff_ratio = 1.20
 max_clob_spread = 0.50
 
 # Per-field CLOB freshness thresholds (seconds)
@@ -162,7 +166,7 @@ fok_max_entry_price = 0.85       # FOK taker max entry (more permissive than GTC
 confidence_adaptive_pricing = true
 confidence_adaptive_base = 0.85      # start adjusting above this confidence level
 confidence_adaptive_scale = 0.50     # max_price += (confidence - base) * scale
-confidence_adaptive_cap = 0.92       # absolute ceiling on entry price
+confidence_adaptive_cap = 0.45       # absolute ceiling on entry price
 
 # GTC confidence discount: disabled to improve fill rate on thin CLOB books.
 # When enabled, discounts GTC limit price below market — reduces fills on
@@ -200,7 +204,7 @@ reactive_sweep_max_price = 0.65    # never sweep above this price
 # Bayesian signal calibration: use CLOB mid as prior, model confidence as likelihood
 enabled = true
 max_edge = 0.15            # posterior never exceeds clob_mid + max_edge
-min_edge = 0.04            # minimum fee-adjusted edge to trade (4 cents, maker=0% fee)
+min_edge = 0.03            # minimum fee-adjusted edge to trade (4 cents, maker=0% fee)
 default_likelihood_ratio = 1.3  # used when insufficient calibration data
 min_samples_for_calibration = 30  # need N outcomes before using empirical LR
 fee_constant = 0.25        # Polymarket dynamic fee constant
