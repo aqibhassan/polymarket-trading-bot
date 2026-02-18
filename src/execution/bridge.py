@@ -224,3 +224,12 @@ class ExecutionBridge:
 
     async def get_order(self, order_id: str) -> Order | None:
         return await self._backend().get_order(order_id)
+
+    async def get_order_status(self, exchange_order_id: str) -> dict[str, Any]:
+        """Query the CLOB for an order's status by exchange order ID.
+
+        Only meaningful in live mode. Paper mode returns a stub.
+        """
+        if self._live_trader is not None and hasattr(self._live_trader, "get_order_status"):
+            return await self._live_trader.get_order_status(exchange_order_id)
+        return {"status": "UNKNOWN"}

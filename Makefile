@@ -55,6 +55,9 @@ dashboard:
 dashboard-dev:
 	cd dashboard && npm install && npm run dev
 
+rust-clob:
+	cd rs-clob-python && maturin develop --release
+
 rust-build:
 	cd rust-backtest && cargo build --release
 

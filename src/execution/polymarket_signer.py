@@ -395,6 +395,26 @@ class PolymarketLiveTrader:
             logger.error("live_positions_fetch_failed", error=str(exc))
             return []
 
+    async def get_order_status(self, exchange_order_id: str) -> dict[str, Any]:
+        """Query the CLOB API for an order's status by exchange order ID.
+
+        Returns a dict with at least 'status', 'size_matched', 'original_size' keys.
+        """
+        await self._rate_limiter.wait()
+        try:
+            resp = self._clob_client.get_order(exchange_order_id)
+            if isinstance(resp, dict):
+                return resp
+            # Object with attributes — normalize to dict
+            return {
+                "status": getattr(resp, "status", ""),
+                "size_matched": getattr(resp, "size_matched", getattr(resp, "sizeMatched", "0")),
+                "original_size": getattr(resp, "original_size", getattr(resp, "originalSize", "0")),
+            }
+        except Exception as exc:
+            logger.error("get_order_status_failed", order_id=exchange_order_id, error=str(exc)[:200])
+            return {"status": "UNKNOWN", "error": str(exc)[:200]}
+
     async def get_balance(self) -> Decimal:
         """Fetch USDC balance from the CLOB API."""
         from py_clob_client.clob_types import AssetType, BalanceAllowanceParams

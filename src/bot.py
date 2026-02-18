@@ -1275,9 +1275,9 @@ class BotOrchestrator:
                 if current_window_start is not None and w_start != current_window_start:
                     # Check if pending GTC was filled before recording PnL
                     if not fak_only and pending_gtc_oid:
-                      if bridge.mode == "live" and bridge._live_trader:
+                      if bridge.mode == "live":
                         try:
-                            resp = bridge._live_trader._clob_client.get_order(pending_gtc_oid)
+                            resp = await bridge.get_order_status(pending_gtc_oid)
                             gtc_status = resp.get("status", "") if isinstance(resp, dict) else ""
                             if gtc_status == "MATCHED":
                                 # GTC filled — NOW we have a real position.
@@ -2088,9 +2088,9 @@ class BotOrchestrator:
                     and pending_gtc_oid
                     and gtc_poll_counter % 3 == 0
                 ):
-                  if bridge.mode == "live" and bridge._live_trader:
+                  if bridge.mode == "live":
                     try:
-                        _gtc_resp = bridge._live_trader._clob_client.get_order(
+                        _gtc_resp = await bridge.get_order_status(
                             pending_gtc_oid,
                         )
                         _gtc_st = (
